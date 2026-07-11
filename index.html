@@ -1,0 +1,1495 @@
+<title>Serentia Ops Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --surface-1: #fcfcfb; --page: #f9f9f7;
+    --ink-1: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --accent-soft: #cde2fb; --meter-track: #cde2fb;
+    --good: #0ca30c; --good-text: #006300;
+    --warning: #fab219; --warn-text: #7a5200; --serious: #ec835a; --critical: #d03b3b;
+    --good-bg: rgba(12,163,12,.10); --warning-bg: rgba(250,178,25,.16);
+    --serious-bg: rgba(236,131,90,.13); --critical-bg: rgba(208,59,59,.10);
+    --violet: #4a3aa7; --focus-seg: #2a78d6; --lunch-seg: #c3c2b7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-1: #1a1a19; --page: #0d0d0d;
+      --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+      --grid: #2c2c2a; --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --accent: #3987e5; --accent-soft: #184f95; --meter-track: #232e3d;
+      --good-text: #0ca30c; --warn-text: #fab219; --violet: #9085e9;
+      --focus-seg: #3987e5; --lunch-seg: #52514e;
+    }
+  }
+  :root[data-theme="light"] {
+    --surface-1: #fcfcfb; --page: #f9f9f7;
+    --ink-1: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --accent-soft: #cde2fb; --meter-track: #cde2fb;
+    --good-text: #006300; --warn-text: #7a5200; --violet: #4a3aa7;
+    --focus-seg: #2a78d6; --lunch-seg: #c3c2b7;
+  }
+  :root[data-theme="dark"] {
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --accent: #3987e5; --accent-soft: #184f95; --meter-track: #232e3d;
+    --good-text: #0ca30c; --warn-text: #fab219; --violet: #9085e9;
+    --focus-seg: #3987e5; --lunch-seg: #52514e;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--page); color: var(--ink-1); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 80px; }
+  header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 4px; }
+  header.top h1 { font-size: 20px; font-weight: 700; letter-spacing: .2px; }
+  header.top h1 span { color: var(--violet); }
+  #dateline { color: var(--ink-2); font-size: 14px; }
+  #clock { font-variant-numeric: tabular-nums; color: var(--ink-1); font-weight: 600; }
+
+  /* work bar */
+  .workbar { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 14px 18px; margin: 14px 0 10px; }
+  .workbar .row1 { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+  .statuschip { font-size: 13px; font-weight: 700; border-radius: 999px; padding: 4px 12px; }
+  .statuschip.off { color: var(--ink-2); background: var(--grid); }
+  .statuschip.on { color: var(--good-text); background: var(--good-bg); }
+  .statuschip.lunch { color: var(--warn-text); background: var(--warning-bg); }
+  .statuschip.done { color: var(--violet); background: var(--accent-soft); }
+  .workbar .stats { display: flex; gap: 16px; flex-wrap: wrap; margin-left: auto; font-size: 13px; color: var(--ink-2); }
+  .workbar .stats b { color: var(--ink-1); font-variant-numeric: tabular-nums; }
+  .workbar .stats .bad b { color: var(--critical); }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.primary { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 16px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  button.ghost { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--ink-2); cursor: pointer; }
+  button.danger { font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--critical); background: transparent; color: var(--critical); cursor: pointer; }
+  .nudge { display: none; margin-top: 10px; padding: 10px 14px; border-radius: 10px; background: var(--warning-bg); color: var(--warn-text); font-size: 13.5px; font-weight: 600; }
+  .nudge.show { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+  .hero { display: flex; align-items: center; gap: 16px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 14px 20px; margin: 0 0 16px; }
+  .hero .big { font-size: 42px; font-weight: 600; line-height: 1.05; }
+  .hero .sub { color: var(--ink-2); font-size: 13px; }
+  .meter { flex: 1; min-width: 120px; }
+  .meter .track { height: 10px; border-radius: 5px; background: var(--meter-track); overflow: hidden; }
+  .meter .fill { height: 100%; border-radius: 5px; background: var(--accent); transition: width .3s; }
+
+  nav.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
+  nav.tabs button { font: inherit; font-size: 14px; padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-2); cursor: pointer; }
+  nav.tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  section.panel { display: none; }
+  section.panel.active { display: block; }
+
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin-bottom: 14px; }
+  .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+  .card .when { color: var(--ink-3); font-size: 12.5px; font-weight: 600; letter-spacing: .3px; }
+  .card ul.checks { list-style: none; padding: 0; margin-top: 10px; }
+  .card ul.checks li { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-top: 1px solid var(--grid); }
+  .card ul.checks li:first-child { border-top: 0; }
+  .card ul.checks input[type=checkbox] { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex: none; cursor: pointer; }
+  .card ul.checks label { font-size: 14px; color: var(--ink-1); cursor: pointer; }
+  .card ul.checks li.done label { color: var(--ink-3); text-decoration: line-through; }
+  .ref { color: var(--ink-3); font-size: 12px; font-weight: 400; }
+  .weekly-badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--violet); border: 1px solid var(--violet); border-radius: 999px; padding: 1px 8px; margin-left: 6px; vertical-align: 2px; }
+  .editrow { display: flex; gap: 6px; align-items: center; width: 100%; }
+  .editrow input[type=text] { flex: 1; font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .editrow .del { border: 0; background: none; color: var(--critical); cursor: pointer; font-size: 15px; padding: 0 6px; }
+  .edithead { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+  .edithead input { font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+
+  /* todos */
+  .todo-add { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .todo-add input[type=text] { flex: 1; min-width: 200px; font: inherit; font-size: 14px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--baseline); background: var(--surface-1); color: var(--ink-1); }
+  .todo-add select { font: inherit; font-size: 13px; border-radius: 10px; border: 1px solid var(--baseline); background: var(--surface-1); color: var(--ink-1); padding: 6px 8px; }
+  ul.todos { list-style: none; padding: 0; }
+  ul.todos li { display: flex; align-items: flex-start; gap: 10px; padding: 9px 4px; border-top: 1px solid var(--grid); }
+  ul.todos li:first-child { border-top: 0; }
+  ul.todos input[type=checkbox] { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); cursor: pointer; }
+  ul.todos .txt { flex: 1; font-size: 14px; }
+  ul.todos li.done .txt { color: var(--ink-3); text-decoration: line-through; }
+  ul.todos .del { border: 0; background: none; color: var(--ink-3); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .prio { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; flex: none; margin-top: 3px; }
+  .prio.p1 { color: var(--critical); background: var(--critical-bg); }
+  .prio.p2 { color: var(--serious); background: var(--serious-bg); }
+  .prio.p3 { color: var(--ink-2); background: var(--accent-soft); }
+
+  /* focus */
+  .timerbox { text-align: center; padding: 10px 0 4px; }
+  .timerbox .time { font-size: 64px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+  .timerbox .mode { font-size: 13px; color: var(--ink-2); margin: 6px 0 12px; }
+  .timerbox .task { font-size: 14px; font-weight: 600; color: var(--violet); }
+  .focus-controls { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+  .focus-setup { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 12px; }
+  .focus-setup select, .focus-setup input { font: inherit; font-size: 13.5px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .durrow { display: flex; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); align-items: center; margin-top: 12px; justify-content: center; }
+  .durrow input { width: 56px; font: inherit; font-size: 13px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .ledger { margin-top: 8px; }
+  .lrow { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+  .lrow .hh { width: 46px; font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; text-align: right; }
+  .lrow .bar { flex: 1; height: 20px; border-radius: 5px; background: var(--grid); position: relative; overflow: hidden; cursor: pointer; }
+  .seg { position: absolute; top: 0; bottom: 0; }
+  .seg.work { background: var(--meter-track); }
+  .seg.focus { background: var(--focus-seg); }
+  .seg.lunch { background: var(--lunch-seg); }
+  .seg.gap { background: repeating-linear-gradient(45deg, var(--warning-bg), var(--warning-bg) 6px, transparent 6px, transparent 12px); }
+  .lrow .note { font-size: 11.5px; color: var(--ink-3); width: 30%; min-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-top: 8px; }
+  .legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+  .statgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 8px; }
+  .stat { border: 1px solid var(--grid); border-radius: 10px; padding: 10px 12px; }
+  .stat .l { font-size: 12px; color: var(--ink-2); }
+  .stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat.bad .v { color: var(--critical); }
+  .stat.good .v { color: var(--good-text); }
+  table.hist { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  table.hist th, table.hist td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  table.hist th { color: var(--ink-2); font-weight: 600; }
+  .pct-bad { color: var(--critical); font-weight: 600; }
+  .pct-good { color: var(--good-text); font-weight: 600; }
+
+  /* respond */
+  .frm { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 10px; }
+  .frm label { font-size: 12px; color: var(--ink-2); display: block; margin-bottom: 3px; }
+  .frm input, .frm select { width: 100%; font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  textarea.msg { width: 100%; min-height: 120px; font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); resize: vertical; }
+  .alertbox { border-radius: 10px; padding: 12px 14px; font-size: 13.5px; margin: 10px 0; }
+  .alertbox.crit { background: var(--critical-bg); color: var(--critical); font-weight: 600; }
+  .alertbox.warn { background: var(--warning-bg); color: var(--warn-text); }
+  .alertbox.info { background: var(--accent-soft); color: var(--ink-1); }
+  .classify { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+  .chip { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 3px 10px; background: var(--accent-soft); color: var(--ink-1); }
+  .chip.crit { background: var(--critical-bg); color: var(--critical); }
+  .chip.warn { background: var(--warning-bg); color: var(--warn-text); }
+  .chip.vip { background: var(--violet); color: #fff; }
+  ol.steps { padding-left: 20px; font-size: 13.5px; }
+  ol.steps li { margin: 4px 0; }
+  pre.draft { white-space: pre-wrap; font-family: inherit; font-size: 13.5px; background: var(--page); border: 1px solid var(--grid); border-radius: 10px; padding: 12px 14px; margin-top: 8px; }
+
+  /* chat */
+  .chatlog { display: flex; flex-direction: column; gap: 10px; max-height: 460px; overflow-y: auto; padding: 4px 2px; margin-bottom: 12px; }
+  .bubble { max-width: 85%; border-radius: 14px; padding: 10px 14px; font-size: 13.5px; }
+  .bubble.me { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .bubble.bot { align-self: flex-start; background: var(--surface-1); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .bubble.bot .src { display: block; margin-top: 6px; font-size: 11.5px; color: var(--ink-3); }
+  .bubble.bot table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+  .bubble.bot th, .bubble.bot td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  .chatin { display: flex; gap: 8px; }
+  .chatin input { flex: 1; font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--baseline); background: var(--surface-1); color: var(--ink-1); }
+  .suggest { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
+  /* kpis */
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; }
+  .tile .label { font-size: 12.5px; color: var(--ink-2); }
+  .tile .value { font-size: 30px; font-weight: 600; margin: 2px 0; }
+  .tile .value .unit { font-size: 15px; font-weight: 500; color: var(--ink-2); }
+  .tile .target { font-size: 12px; color: var(--ink-3); }
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 9px; margin-top: 6px; }
+  .status.good { color: var(--good-text); background: var(--good-bg); }
+  .status.warning { color: var(--warn-text); background: var(--warning-bg); }
+  .status.critical { color: var(--critical); background: var(--critical-bg); }
+  .status.na { color: var(--ink-3); background: var(--grid); }
+  .tile input { width: 100%; font: inherit; font-size: 14px; margin-top: 8px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .metrics-note { font-size: 13px; color: var(--ink-2); margin: 12px 0; }
+  .connect .frm2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 10px 0; }
+  .connect input { width: 100%; font: inherit; font-size: 13.5px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .syncstatus { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+
+  /* guide + templates */
+  details.acc { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; }
+  details.acc summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 12px 16px; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+  details.acc summary::after { content: "\25BE"; color: var(--ink-3); transition: transform .2s; }
+  details.acc[open] summary::after { transform: rotate(180deg); }
+  details.acc .body { padding: 0 16px 14px; font-size: 13.5px; color: var(--ink-1); }
+  .body table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0; }
+  .body th, .body td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  .body th { color: var(--ink-2); font-weight: 600; }
+  .tablewrap { overflow-x: auto; }
+  .body p { margin: 6px 0; }
+  .body strong.hot { color: var(--critical); }
+  .pill { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; }
+  .pill.P1 { color: var(--critical); background: var(--critical-bg); }
+  .pill.P2 { color: var(--serious); background: var(--serious-bg); }
+  .pill.P3 { color: var(--ink-2); background: var(--accent-soft); }
+  .tpl { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; }
+  .tpl .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 14px; cursor: pointer; }
+  .tpl .head h3 { font-size: 14px; font-weight: 600; }
+  .tpl .head .acts { display: flex; gap: 6px; flex: none; }
+  .tpl pre { display: none; white-space: pre-wrap; font-family: inherit; font-size: 13px; color: var(--ink-2); padding: 0 14px 12px; border-top: 1px dashed var(--grid); margin: 0; }
+  .tpl.open pre { display: block; }
+  .tpl .editor { display: none; padding: 0 14px 14px; border-top: 1px dashed var(--grid); }
+  .tpl.editing .editor { display: block; }
+  .tpl.editing pre { display: none; }
+  .tpl .editor input, .tpl .editor textarea { width: 100%; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); margin-top: 8px; }
+  .tpl .editor textarea { min-height: 160px; resize: vertical; }
+  .copied { color: var(--good-text) !important; border-color: var(--good-text) !important; }
+  footer { margin-top: 26px; color: var(--ink-3); font-size: 12px; }
+
+  /* sync status pill */
+  .sync { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 3px 10px; cursor: pointer; margin-left: auto; white-space: nowrap; }
+  .sync.ok { color: var(--good-text); background: var(--good-bg); }
+  .sync.err { color: var(--warn-text); background: var(--warning-bg); }
+  .sync.local { color: var(--ink-2); background: var(--grid); }
+
+  /* auth / setup overlay */
+  .overlay { position: fixed; inset: 0; background: rgba(8,8,8,0.55); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
+  .overlay[hidden] { display: none; }
+  .ovcard { background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px; padding: 22px 22px 18px; max-width: 420px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,0.28); }
+  .ovcard h2 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+  .ovcard p { font-size: 13.5px; color: var(--ink-2); margin-bottom: 10px; }
+  .ovlabel { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 0; }
+  .ovlabel input { width: 100%; font: inherit; font-size: 14px; margin-top: 4px; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
+  .ovcard .btnrow { margin-top: 14px; }
+  .ovcard a { color: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>SERENTIA <span>Ops Dashboard</span></h1>
+    <div id="dateline"></div>
+    <div id="clock"></div>
+    <span id="sync" class="sync local" title="Sync and account"></span>
+  </header>
+
+  <div class="workbar">
+    <div class="row1">
+      <span class="statuschip off" id="statusChip">Not checked in</span>
+      <div class="btnrow" id="clockBtns"></div>
+      <div class="stats">
+        <span>Worked <b id="stWorked">0:00</b></span>
+        <span>Focused <b id="stFocused">0:00</b></span>
+        <span id="stUnaccWrap">Unaccounted <b id="stUnacc">0:00</b></span>
+      </div>
+    </div>
+    <div class="nudge" id="nudge"><span id="nudgeText"></span><button class="primary" id="nudgeBtn">Start a focus session</button></div>
+  </div>
+
+  <div class="hero">
+    <div>
+      <div class="big" id="heroPct">0%</div>
+      <div class="sub">of today's routine done</div>
+    </div>
+    <div class="meter"><div class="track"><div class="fill" id="heroFill" style="width:0%"></div></div>
+      <div class="sub" id="heroCount" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <nav class="tabs">
+    <button data-tab="today" class="active">Today</button>
+    <button data-tab="focus">Focus &amp; Time</button>
+    <button data-tab="todo">My to-do</button>
+    <button data-tab="respond">Respond</button>
+    <button data-tab="ask">Ask SOPs</button>
+    <button data-tab="metrics">KPIs &amp; SLA</button>
+    <button data-tab="guide">SOP guide</button>
+    <button data-tab="templates">Templates</button>
+  </nav>
+
+  <section class="panel active" id="panel-today">
+    <div class="toolbar">
+      <button class="ghost" id="editSched">Edit schedule</button>
+      <button class="ghost" id="addBlock" style="display:none">Add block</button>
+      <button class="ghost" id="resetSched" style="display:none">Reset to default</button>
+    </div>
+    <div id="schedList"></div>
+  </section>
+
+  <section class="panel" id="panel-focus">
+    <div class="card">
+      <h2>Focus timer <span class="ref">Pomodoro: work in timed sprints, log every one</span></h2>
+      <div class="timerbox">
+        <div class="task" id="timerTask"></div>
+        <div class="time" id="timerTime">25:00</div>
+        <div class="mode" id="timerMode">Ready</div>
+        <div class="focus-setup" id="timerSetup">
+          <select id="focusLabel"></select>
+          <input type="text" id="focusCustom" placeholder="or type a custom task" style="display:none; min-width:220px">
+        </div>
+        <div class="focus-controls" id="timerCtl"></div>
+        <div class="durrow">
+          Focus <input type="number" id="durFocus" min="5" max="90" value="25"> min ·
+          Short break <input type="number" id="durShort" min="2" max="30" value="5"> min ·
+          Long break <input type="number" id="durLong" min="5" max="45" value="15"> min every <input type="number" id="durCycle" min="2" max="8" value="4">th
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Today's hour ledger <span class="ref">every hour accounted for — click a bar to label untracked time</span></h2>
+      <div class="ledger" id="ledger"></div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--focus-seg)"></span>Focused work</span>
+        <span><span class="sw" style="background:var(--meter-track)"></span>Checked in (untracked)</span>
+        <span><span class="sw" style="background:var(--lunch-seg)"></span>Lunch / break</span>
+        <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--warning-bg),var(--warning-bg) 6px,transparent 6px,transparent 12px)"></span>Unaccounted gap</span>
+      </div>
+      <div class="statgrid" id="dayStats"></div>
+    </div>
+
+    <div class="card">
+      <h2>Accountability history <span class="ref">last 14 days</span></h2>
+      <div class="tablewrap"><table class="hist" id="histTable"></table></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-todo">
+    <div class="todo-add">
+      <input type="text" id="todoText" placeholder="Add a task (e.g. Follow up order #SER70675 with Sharmaine)">
+      <select id="todoPrio"><option value="p3">P3</option><option value="p2">P2</option><option value="p1">P1</option></select>
+      <button class="primary" id="todoAdd">Add</button>
+    </div>
+    <div class="card">
+      <h2>My tasks</h2>
+      <ul class="todos" id="todoList"></ul>
+      <div style="margin-top:10px"><button class="ghost" id="clearDone">Clear completed</button></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-respond">
+    <div class="card">
+      <h2>Response recommender <span class="ref">paste a customer message; get classification, SOP steps, and a tailored draft</span></h2>
+      <div class="frm">
+        <div><label>Customer name</label><input id="rName" placeholder="e.g. Patricia"></div>
+        <div><label>Order number</label><input id="rOrder" placeholder="e.g. SER70675"></div>
+        <div><label>Past purchases</label><input id="rCount" type="number" min="1" value="1"></div>
+        <div><label>Order value ($)</label><input id="rValue" type="number" min="0" placeholder="e.g. 49"></div>
+        <div><label>Contact count on this issue</label><input id="rContacts" type="number" min="1" value="1"></div>
+      </div>
+      <textarea class="msg" id="rMsg" placeholder="Paste the customer's message here..."></textarea>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="primary" id="rGo">Recommend response</button>
+        <select id="rOverride"><option value="">Auto-detect category</option></select>
+      </div>
+      <div id="rOut"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-ask">
+    <div class="card">
+      <h2>Ask the SOPs <span class="ref">searches the manuals built into this page — for nuanced cases, ask Claude in the Serentia repo</span></h2>
+      <div class="suggest" id="askSuggest"></div>
+      <div class="chatlog" id="chatlog"></div>
+      <div class="chatin">
+        <input id="askIn" placeholder="e.g. what refund for shade mismatch on a VIP?">
+        <button class="primary" id="askGo">Ask</button>
+        <button class="ghost" id="askClear">Clear</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-metrics">
+    <div class="card connect">
+      <h2>Re:amaze connection</h2>
+      <p class="metrics-note" style="margin-top:6px">Enter your Re:amaze brand subdomain, login email, and API token (Re:amaze Settings, API Token). Credentials stay in this browser only. Live sync needs the local connector (<code>dashboard/server.js</code> in the repo, run <code>node server.js</code>, open <code>http://localhost:8787</code>) because browsers block direct cross-site API calls on this page. You can also paste the token to Claude in a session and ask it to sync for you.</p>
+      <div class="frm2">
+        <input id="rzBrand" placeholder="brand subdomain (e.g. serentia)">
+        <input id="rzEmail" placeholder="login email">
+        <input id="rzToken" type="password" placeholder="API token">
+      </div>
+      <div class="btnrow">
+        <button class="primary" id="rzSync">Save &amp; sync now</button>
+        <button class="ghost" id="rzForget">Forget credentials</button>
+      </div>
+      <div class="syncstatus" id="rzStatus"></div>
+    </div>
+    <p class="metrics-note">Anything not synced automatically can be typed from <strong>Re:amaze Reports</strong> and <strong>Trustpilot Business</strong>. Status is judged against SOP targets — a Watch or Breach should reach the Founder <em>before</em> it breaches.</p>
+    <div class="kpi-grid" id="kpiGrid"></div>
+    <div class="card" style="margin-top:14px">
+      <h2>SLA tiers (24/7 clock)</h2>
+      <div class="tablewrap"><table>
+        <tr><th>Tier</th><th>Examples</th><th>First response</th><th>Resolution</th></tr>
+        <tr><td><span class="pill P1">P1 / VIP</span></td><td>Lost order, duplicate charge, payment failure, chargeback</td><td><strong>4h</strong></td><td><strong>12h</strong></td></tr>
+        <tr><td><span class="pill P2">P2</span></td><td>Defect, wrong item, replacement, falsely fulfilled</td><td><strong>6h</strong></td><td><strong>24h</strong></td></tr>
+        <tr><td><span class="pill P3">P3</span></td><td>Shipping update, shade query, general inquiry</td><td><strong>8h</strong></td><td><strong>48h</strong></td></tr>
+      </table></div>
+      <p class="ref">VIP = 2+ purchases OR $100+ order · classify every ticket within 15 min · VIP unresolved 30 min: flag TL · address changes: ~30 min response.</p>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-guide"></section>
+
+  <section class="panel" id="panel-templates">
+    <div class="toolbar">
+      <p class="metrics-note" style="margin:0;flex:1">Tap a template to expand, Copy to use, Edit to change it (your edits also feed the Respond tab). SOP rule: edit every macro — name, order number, specifics, and the <em>why</em> behind any policy.</p>
+      <button class="ghost" id="tplAdd">Add template</button>
+      <button class="ghost" id="tplResetAll">Reset all to default</button>
+    </div>
+    <div id="tplList"></div>
+  </section>
+
+  <footer id="footNote">Sync status is shown by the pill in the top corner. Set up cloud sync (recommended for iPad) with <code>dashboard/SETUP.md</code>; until then, or on the claude.ai preview, data is kept on this device only. Knowledge source: Daily Ops Manual v2.1 · Ops Manual v2.4 · CS Ops Manual v2.1.</footer>
+</div>
+
+<div id="authOverlay" class="overlay" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+"use strict";
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const todayISO = () => { const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
+/* ===== storage engine: cloud (Supabase) with on-device fallback =====
+   Cloud mode keeps all your data in the cloud and syncs across devices.
+   On-device mode (the claude.ai preview, or "use on this device only")
+   behaves exactly like the original localStorage version. */
+const CFG_KEY = "serentia.cfg";
+// Optional: hardcode your Supabase project here so new devices only need to sign in.
+const BAKED = { url: "https://hmvysvilhesfvyhtkxje.supabase.co", anon: "sb_publishable_BR_bI6MJP5WxDAjAWsrRpQ_AXIspety" };
+let STATE = {};
+let cfg = null, sb = null, auth = null;
+let CLOUD_ON = false, saving = false, syncErr = false, lastSync = 0, pushTimer = null;
+
+const store = {
+  get(k, d) { return Object.prototype.hasOwnProperty.call(STATE, k) ? STATE[k] : d; },
+  set(k, v) { STATE[k] = v; if (CLOUD_ON) scheduleCloud(); else lsSet(k, v); },
+  del(k) { delete STATE[k]; if (CLOUD_ON) scheduleCloud(); else lsDel(k); }
+};
+function lsSet(k, v) { try { localStorage.setItem("serentia."+k, JSON.stringify(v)); } catch(e){} }
+function lsDel(k) { try { localStorage.removeItem("serentia."+k); } catch(e){} }
+function collectLocal() {
+  const o = {};
+  try { for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.indexOf("serentia.") === 0) {
+      const s = key.slice(9); if (s === "cfg") continue;
+      try { o[s] = JSON.parse(localStorage.getItem(key)); } catch(e){}
+    }
+  } } catch(e){}
+  return o;
+}
+function hydrateLocal() { STATE = collectLocal(); }
+function loadCfg() {
+  if (BAKED.url && BAKED.anon) return { url: BAKED.url.replace(/\/+$/,""), anon: BAKED.anon };
+  try { const c = JSON.parse(localStorage.getItem(CFG_KEY)); return (c && c.url && c.anon) ? c : null; } catch(e){ return null; }
+}
+function saveCfg(c) { try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch(e){} }
+function cloudInit() {
+  if (!cfg || !window.supabase || !window.supabase.createClient) return false;
+  try { sb = window.supabase.createClient(cfg.url, cfg.anon, { auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true } }); return true; }
+  catch(e){ return false; }
+}
+async function pullCloud() {
+  const { data, error } = await sb.from("state").select("data").eq("user_id", auth.id).maybeSingle();
+  if (error) throw error;
+  return (data && data.data) ? data.data : {};
+}
+async function pushCloud() {
+  if (!CLOUD_ON) return;
+  saving = true; renderSync();
+  try {
+    const { error } = await sb.from("state").upsert({ user_id: auth.id, data: STATE, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    syncErr = !!error; if (!error) lastSync = Date.now();
+  } catch(e){ syncErr = true; }
+  saving = false; renderSync();
+}
+function scheduleCloud() { clearTimeout(pushTimer); saving = true; renderSync(); pushTimer = setTimeout(pushCloud, 900); }
+function renderSync() {
+  const el = $("#sync"); if (!el) return;
+  let txt, cls;
+  if (CLOUD_ON) { cls = syncErr ? "err" : "ok";
+    txt = saving ? "Saving..." : syncErr ? "Offline - will retry" : "Synced" + (lastSync ? " " + new Date(lastSync).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "");
+  } else if (cfg && window.supabase) { cls = "err"; txt = "Signed out"; }
+  else { cls = "local"; txt = "On this device"; }
+  el.className = "sync " + cls; el.textContent = txt;
+}
+async function afterSignIn() {
+  try { const u = await sb.auth.getUser(); auth = u.data.user; } catch(e){ openAuth("Couldn't confirm your sign-in. Try again."); return; }
+  if (!auth) { openAuth(); return; }
+  let data = {};
+  try { data = await pullCloud(); } catch(e){ openAuth("Signed in, but couldn't load your data (" + (e.message||e) + "). Check that the setup SQL ran."); return; }
+  STATE = data || {};
+  const cloudEmpty = !Object.keys(STATE).length;
+  if (cloudEmpty) { const loc = collectLocal(); if (Object.keys(loc).length) STATE = loc; }
+  CLOUD_ON = true; lastSync = Date.now();
+  if (cloudEmpty && Object.keys(STATE).length) pushCloud();
+  applyState(); closeAuth();
+}
+function ovEl() { return $("#authOverlay"); }
+function closeAuth() { const o = ovEl(); if (o) { o.hidden = true; o.innerHTML = ""; } }
+function ovCard(inner) { return "<div class='ovcard'>" + inner + "</div>"; }
+function ovField(label, id, ph) { return "<label class='ovlabel'>" + label + "<input id='" + id + "' placeholder='" + ph + "' autocapitalize='off' autocorrect='off' spellcheck='false'></label>"; }
+function openAuth(msg) {
+  const o = ovEl(); if (!o) return; o.hidden = false;
+  if (!cfg) {
+    o.innerHTML = ovCard(
+      "<h2>Set up cloud sync</h2>"
+      + "<p>Paste the two values from your free Supabase project. Your data will then save to the cloud and follow you across devices. The 5-minute walkthrough is in <code>dashboard/SETUP.md</code>.</p>"
+      + ovField("Project URL", "cfgUrl", "https://xxxx.supabase.co")
+      + ovField("anon public key", "cfgKey", "eyJhbGci...")
+      + "<div class='btnrow'><button class='primary' id='cfgSave'>Save and continue</button><button class='ghost' id='cfgOffline'>Use on this device only</button></div>"
+      + "<p class='ref' id='cfgMsg'></p>");
+    $("#cfgSave").onclick = () => {
+      const url = $("#cfgUrl").value.trim().replace(/\/+$/,""), anon = $("#cfgKey").value.trim();
+      if (!/^https:\/\/.+\.supabase\.co$/.test(url) || anon.length < 20) { $("#cfgMsg").textContent = "That doesn't look right. The Project URL ends in .supabase.co and the anon key is a long token."; return; }
+      cfg = { url, anon }; saveCfg(cfg);
+      if (!cloudInit()) { $("#cfgMsg").textContent = "Saved, but the sync library didn't load. Open the hosted link (not the claude.ai preview) and reload."; return; }
+      openAuth();
+    };
+    $("#cfgOffline").onclick = () => { hydrateLocal(); applyState(); closeAuth(); };
+    return;
+  }
+  if (!CLOUD_ON) {
+    o.innerHTML = ovCard(
+      "<h2>Sign in</h2>"
+      + (msg ? "<p class='ref'>" + esc(msg) + "</p>" : "<p>Enter your email and we'll send a one-tap sign-in link. No password to remember.</p>")
+      + ovField("Email", "authEmail", "you@example.com")
+      + "<div class='btnrow'><button class='primary' id='authSend'>Email me a sign-in link</button><button class='ghost' id='authOffline'>Use on this device only</button></div>"
+      + "<p class='ref' id='authMsg'></p><p class='ref'><a href='#' id='authReset'>Change cloud settings</a></p>");
+    $("#authSend").onclick = async () => {
+      const email = $("#authEmail").value.trim(); if (!email) { $("#authMsg").textContent = "Enter your email first."; return; }
+      $("#authMsg").textContent = "Sending...";
+      try { const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.href.split("#")[0].split("?")[0] } });
+        $("#authMsg").textContent = error ? ("Couldn't send: " + error.message) : "Check your email on this device and tap the link. You can close this once you're in.";
+      } catch(e){ $("#authMsg").textContent = "Couldn't send the link. Check your connection."; }
+    };
+    $("#authOffline").onclick = () => { hydrateLocal(); applyState(); closeAuth(); };
+    $("#authReset").onclick = (e) => { e.preventDefault(); localStorage.removeItem(CFG_KEY); cfg = null; sb = null; openAuth(); };
+    return;
+  }
+  o.innerHTML = ovCard(
+    "<h2>Sync and account</h2>"
+    + "<p>Signed in as <strong>" + esc((auth && auth.email) || "you") + "</strong>. Your data lives in the cloud and syncs to every device you sign in on - nothing is kept on this device.</p>"
+    + "<p class='ref'>" + (syncErr ? "Last save failed - check your connection." : "All changes saved to the cloud" + (lastSync ? " at " + new Date(lastSync).toLocaleTimeString() : "")) + "</p>"
+    + "<div class='btnrow'><button class='ghost' id='acctPush'>Save now</button><button class='ghost' id='acctWipe'>Clear this device's cache</button><button class='danger' id='acctOut'>Sign out</button></div>");
+  $("#acctPush").onclick = () => pushCloud();
+  $("#acctWipe").onclick = () => { Object.keys(localStorage).filter(k => k.indexOf("serentia.") === 0 && k !== "serentia.cfg").forEach(k => localStorage.removeItem(k)); $("#acctWipe").textContent = "Cleared"; };
+  $("#acctOut").onclick = async () => { try { await sb.auth.signOut(); } catch(e){} CLOUD_ON = false; auth = null; renderSync(); openAuth(); };
+}
+function applyState() {
+  timer = store.get("timer", { running:false, mode:"focus", endsAt:0, startedAt:0, label:"", pomos:0, paused:false, remainMs:0 });
+  const sd = store.get("durs", null);
+  if (sd) { $("#durFocus").value = sd.f; $("#durShort").value = sd.s; $("#durLong").value = sd.l; $("#durCycle").value = sd.c; }
+  initRz();
+  store.set("lastDay", todayISO());
+  renderToday(); renderTodos(); renderKpis(); renderTemplates(); renderChat(); renderWork(); renderTimer(); renderLedger(); renderSync();
+}
+async function boot() {
+  cfg = loadCfg(); renderSync();
+  const libOK = !!(window.supabase && window.supabase.createClient);
+  if (libOK && cfg && cloudInit()) {
+    sb.auth.onAuthStateChange((ev, sess) => { if (sess && !CLOUD_ON) afterSignIn(); });
+    try { const { data } = await sb.auth.getSession();
+      if (data && data.session) await afterSignIn(); else openAuth();
+    } catch(e){ hydrateLocal(); applyState(); openAuth("Couldn't start cloud sync - using this device for now."); }
+    return;
+  }
+  hydrateLocal(); applyState();
+  if (libOK && !cfg) openAuth();   // hosted but not configured yet: show setup
+}
+const fmtHM = ms => { const m = Math.max(0, Math.round(ms/60000)); return Math.floor(m/60)+":"+String(m%60).padStart(2,"0"); };
+const fmtT = ts => new Date(ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+
+/* ================= DEFAULT SCHEDULE ================= */
+const DEFAULT_SCHEDULE = [
+  { id:"sweep", time:"08:00-09:15", title:"Start-of-day sweep", ref:"Daily Ops SOP A + E",
+    items:[
+      {id:"clickup", t:"ClickUp: Founder messages FIRST, then Zendrop, CS escalations"},
+      {id:"reamaze", t:"Re:amaze: new tickets + verify AI Agent overnight replies (correct/escalate bad ones)"},
+      {id:"classify", t:"Classify new tickets: tier + VIP flag (15-min rule)"},
+      {id:"issues", t:"Skim Zendrop Order Issues sheet for new/unresolved rows"},
+      {id:"backlog", t:"Backlog + SLA-approaching tickets reviewed (before 10:00)"}
+    ]},
+  { id:"fulfil", time:"09:15-10:15", title:"Fulfillment & SLA block", ref:"Daily Ops SOP B + C",
+    items:[
+      {id:"processing", t:"Zendrop order statuses vs 24h processing KPI: flag anything close"},
+      {id:"tracking", t:"Tracking numbers issued + correctly assigned in Shopify (mismatch = same-day fix)"},
+      {id:"health", t:"Update Fulfillment Health Check Sheet (processing / shipping / delivery)"},
+      {id:"redflag", t:"Red-flag scan: repeat carrier/country delays, 'label created not moving', RTS patterns"},
+      {id:"log", t:"Log new issues in Order Issues sheet + raise with Zendrop (order # + type)"},
+      {id:"chase", t:"Chase open Zendrop threads: anything over 24h without response gets escalated"}
+    ]},
+  { id:"ugc", time:"10:15-10:45", title:"UGC / creator fulfillment", ref:"Ops Manual, UGC SOP",
+    items:[
+      {id:"clickup", t:"ClickUp: new creator requests, validate completeness (name/phone/address/email/SKUs)"},
+      {id:"send", t:"Send clean request block to Zendrop (Rachel + Sharmaine)"},
+      {id:"share", t:"Share any new tracking numbers with UGC Coordinator, same day"},
+      {id:"status", t:"Update ClickUp statuses to match real shipment stage"}
+    ]},
+  { id:"pulse1", time:"10:45-11:00", title:"Re:amaze pulse", ref:"P1 4h window",
+    items:[{id:"p1", t:"Sweep for new P1/VIP + escalation-category tickets (AI must not touch)"}]},
+  { id:"creative1", time:"11:00-13:00", title:"Creative coordinator, block 1 (2h)", ref:"Protected creative time",
+    items:[{id:"c1", t:"Creative work"},{id:"noonpulse", t:"~12:00: 5-min inbox glance (keeps P1 4h window safe)"}]},
+  { id:"lunch", time:"13:00-14:00", title:"Lunch", ref:"",
+    items:[{id:"lunch", t:"Actually take it"}]},
+  { id:"cs", time:"14:00-15:00", title:"CS deep block", ref:"Daily Ops SOP E + F",
+    items:[
+      {id:"esc", t:"Handle escalation-category tickets: refunds, replacements, skin reactions, undelivered, cancellations"},
+      {id:"matrix", t:"Apply Refund Decision Matrix: explain the WHY, never bare policy"},
+      {id:"logref", t:"Process refunds + LOG each one against the 2% tracker (logging IS part of the refund)"}
+    ]},
+  { id:"creative2", time:"15:00-16:00", title:"Creative coordinator, block 2 (1h)", ref:"Total 3h/day",
+    items:[{id:"c2", t:"Shipping updates, Insense and Trybe"}]},
+  { id:"rep", time:"16:00-16:30", title:"Reputation block", ref:"Trustpilot + Facebook SOPs",
+    items:[
+      {id:"tp", t:"Trustpilot: respond to ALL reviews 'Awaiting Reply' (empathy + facts, never argue)"},
+      {id:"tplow", t:"Under-3-star reviews: personal follow-up within 24h"},
+      {id:"fb", t:"Facebook: classify + respond; hide negatives (never delete); no order details in public"},
+      {id:"repl", t:"Day-5 follow-ups on replacements sent"}
+    ]},
+  { id:"close", time:"16:30-17:00", title:"End-of-day close", ref:"Daily Ops SOP G + H",
+    items:[
+      {id:"dash", t:"Update Ops Dashboard + COGs with today's data (never batch to week-end)"},
+      {id:"kpi2", t:"Refund+replacement % vs 2% KPI: trending risk goes to Founder BEFORE breach"},
+      {id:"zero", t:"Zero tickets older than 24h at end of day"},
+      {id:"qc", t:"Run daily quality checks (tracking assigned, sheets current, refunds logged)"},
+      {id:"eod", t:"Founder EOD summary: signal + data + recommendation (no storytelling)"}
+    ]}
+];
+const WEEKLY = {
+  1: { id:"wk-mon", title:"Monday extras", items:[{id:"inv", t:"Zendrop invoice reconciliation vs COGs (weekly audit)"},{id:"plan", t:"Plan the week"}] },
+  3: { id:"wk-wed", title:"Wednesday extras", items:[{id:"trend", t:"Fulfillment performance trend review (delays, cancellations, patterns by carrier/country/SKU)"}] },
+  5: { id:"wk-fri", title:"Friday extras", items:[{id:"fcr", t:"Weekly FCR + Trustpilot review"},{id:"learn", t:"CS Learnings pattern review"},{id:"wsum", t:"Weekly summary to Founder: trends, risks, supplier performance"}] }
+};
+function getSchedule() { return store.get("schedule2", null) || JSON.parse(JSON.stringify(DEFAULT_SCHEDULE)); }
+function saveSchedule(s) { store.set("schedule2", s); }
+
+/* ================= TODAY TAB ================= */
+let editMode = false;
+function renderToday() {
+  const d = new Date();
+  $("#dateline").textContent = d.toLocaleDateString(undefined, { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+  const key = "check."+todayISO();
+  const state = store.get(key, {});
+  const sched = getSchedule();
+  const blocks = sched.map(b => ({...b, weekly:false}));
+  const wk = WEEKLY[d.getDay()];
+  if (wk) blocks.splice(blocks.length-1, 0, {...wk, time:"fit into ops blocks", ref:"Weekly rhythm", weekly:true});
+  if (d.getDate() === 1) blocks.splice(blocks.length-1, 0, { id:"wk-month", title:"1st of month", time:"", ref:"Monthly review", weekly:true,
+    items:[{id:"mrev", t:"Full CS performance review + scorecard averages"},{id:"mcogs", t:"COGs reconciliation, nothing older than one billing cycle"}]});
+
+  $("#schedList").innerHTML = blocks.map((b, bi) => {
+    const editable = editMode && !b.weekly;
+    const head = editable
+      ? '<div class="edithead"><input value="'+esc(b.time)+'" data-eb="'+b.id+'" data-f="time" style="width:110px"><input value="'+esc(b.title)+'" data-eb="'+b.id+'" data-f="title" style="flex:1;min-width:160px"><button class="danger" data-delblock="'+b.id+'">Delete block</button></div>'
+      : '<span class="when">'+esc(b.time||"")+'</span>'+(b.weekly?'<span class="weekly-badge">weekly</span>':"")+'<h2>'+esc(b.title)+' '+(b.ref?'<span class="ref">· '+esc(b.ref)+'</span>':"")+'</h2>';
+    const items = b.items.map(it => {
+      const id = b.id+"."+it.id, done = !!state[id];
+      if (editable) return '<li><div class="editrow"><input type="text" value="'+esc(it.t)+'" data-ei="'+b.id+'" data-item="'+it.id+'"><button class="del" data-delitem="'+b.id+'.'+it.id+'" title="Remove">&#10005;</button></div></li>';
+      return '<li class="'+(done?"done":"")+'"><input type="checkbox" id="c-'+id+'" data-id="'+id+'" '+(done?"checked":"")+'><label for="c-'+id+'">'+esc(it.t)+'</label></li>';
+    }).join("");
+    const addBtn = editable ? '<li><button class="ghost" data-additem="'+b.id+'">Add item</button></li>' : "";
+    return '<div class="card">'+head+'<ul class="checks">'+items+addBtn+'</ul></div>';
+  }).join("");
+
+  if (!editMode) {
+    $$("#schedList input[type=checkbox]").forEach(cb => cb.addEventListener("change", () => {
+      const s = store.get(key, {});
+      if (cb.checked) s[cb.dataset.id] = true; else delete s[cb.dataset.id];
+      store.set(key, s);
+      cb.closest("li").classList.toggle("done", cb.checked);
+      updateHero();
+    }));
+  } else {
+    $$("#schedList [data-eb]").forEach(inp => inp.addEventListener("change", () => {
+      const s = getSchedule(); const b = s.find(x => x.id === inp.dataset.eb);
+      if (b) { b[inp.dataset.f] = inp.value; saveSchedule(s); }
+    }));
+    $$("#schedList [data-ei]").forEach(inp => inp.addEventListener("change", () => {
+      const s = getSchedule(); const b = s.find(x => x.id === inp.dataset.ei);
+      const it = b && b.items.find(x => x.id === inp.dataset.item);
+      if (it) { it.t = inp.value; saveSchedule(s); }
+    }));
+    $$("#schedList [data-delitem]").forEach(btn => btn.addEventListener("click", () => {
+      const [bid, iid] = btn.dataset.delitem.split(".");
+      const s = getSchedule(); const b = s.find(x => x.id === bid);
+      if (b) { b.items = b.items.filter(x => x.id !== iid); saveSchedule(s); renderToday(); }
+    }));
+    $$("#schedList [data-additem]").forEach(btn => btn.addEventListener("click", () => {
+      const s = getSchedule(); const b = s.find(x => x.id === btn.dataset.additem);
+      if (b) { b.items.push({id:"u"+Date.now(), t:"New item"}); saveSchedule(s); renderToday(); }
+    }));
+    $$("#schedList [data-delblock]").forEach(btn => btn.addEventListener("click", () => {
+      if (!confirm("Delete this whole block?")) return;
+      saveSchedule(getSchedule().filter(x => x.id !== btn.dataset.delblock)); renderToday();
+    }));
+  }
+  updateHero();
+  fillFocusLabels();
+}
+function updateHero() {
+  const boxes = $$("#schedList input[type=checkbox]");
+  const done = boxes.filter(b => b.checked).length, total = boxes.length;
+  const pct = total ? Math.round(done/total*100) : 0;
+  $("#heroPct").textContent = pct + "%";
+  $("#heroFill").style.width = pct + "%";
+  $("#heroCount").textContent = editMode ? "editing schedule" : done+" of "+total+" steps ticked · resets each day";
+}
+$("#editSched").addEventListener("click", () => {
+  editMode = !editMode;
+  $("#editSched").textContent = editMode ? "Done editing" : "Edit schedule";
+  $("#addBlock").style.display = editMode ? "" : "none";
+  $("#resetSched").style.display = editMode ? "" : "none";
+  renderToday();
+});
+$("#addBlock").addEventListener("click", () => {
+  const s = getSchedule();
+  s.push({ id:"b"+Date.now(), time:"17:00-17:30", title:"New block", ref:"", items:[{id:"u"+Date.now(), t:"New item"}] });
+  saveSchedule(s); renderToday();
+});
+$("#resetSched").addEventListener("click", () => {
+  if (confirm("Reset the schedule to the SOP default? Your edits will be lost.")) { store.del("schedule2"); renderToday(); }
+});
+
+/* ================= TIME TRACKING (check in / lunch / out) ================= */
+function dayData() { return store.get("day."+todayISO(), { events:[], logs:[], notes:{} }); }
+function saveDay(d) { store.set("day."+todayISO(), d); }
+function lastEvent(d) { return d.events[d.events.length-1] || null; }
+function workState(d) {
+  const e = lastEvent(d);
+  if (!e) return "off";
+  if (e.type === "in" || e.type === "resume") return "on";
+  if (e.type === "break") return "lunch";
+  if (e.type === "out") return "done";
+  return "off";
+}
+function workedIntervals(d, until) {
+  const iv = []; let open = null;
+  for (const e of d.events) {
+    if ((e.type === "in" || e.type === "resume") && open === null) open = e.ts;
+    if ((e.type === "break" || e.type === "out") && open !== null) { iv.push([open, e.ts]); open = null; }
+  }
+  if (open !== null) iv.push([open, until || Date.now()]);
+  return iv;
+}
+function breakIntervals(d, until) {
+  const iv = []; let open = null;
+  for (const e of d.events) {
+    if (e.type === "break" && open === null) open = e.ts;
+    if ((e.type === "resume" || e.type === "out") && open !== null) { iv.push([open, e.ts]); open = null; }
+  }
+  if (open !== null) iv.push([open, until || Date.now()]);
+  return iv;
+}
+function sumIv(iv) { return iv.reduce((a, [s, e]) => a + Math.max(0, e - s), 0); }
+function clipIv(iv, lo, hi) { return iv.map(([s,e]) => [Math.max(s,lo), Math.min(e,hi)]).filter(([s,e]) => e > s); }
+function subtractIv(base, cuts) {
+  let out = base.slice();
+  for (const [cs, ce] of cuts) {
+    const next = [];
+    for (const [s, e] of out) {
+      if (ce <= s || cs >= e) { next.push([s,e]); continue; }
+      if (cs > s) next.push([s, cs]);
+      if (ce < e) next.push([ce, e]);
+    }
+    out = next;
+  }
+  return out;
+}
+function coveredIntervals(d) {
+  const iv = d.logs.map(l => [l.start, l.end]).sort((a,b)=>a[0]-b[0]);
+  const merged = [];
+  for (const [s,e] of iv) {
+    if (merged.length && s <= merged[merged.length-1][1]) merged[merged.length-1][1] = Math.max(merged[merged.length-1][1], e);
+    else merged.push([s,e]);
+  }
+  return merged;
+}
+function renderWork() {
+  const d = dayData(), st = workState(d);
+  const chip = $("#statusChip");
+  chip.className = "statuschip " + (st==="on"?"on":st==="lunch"?"lunch":st==="done"?"done":"off");
+  const inEv = d.events.find(e => e.type==="in");
+  chip.textContent = st==="off" ? "Not checked in"
+    : st==="on" ? "Working · checked in "+fmtT(inEv.ts)
+    : st==="lunch" ? "On lunch / break"
+    : "Done for today · out "+fmtT(lastEvent(d).ts);
+  const btns = [];
+  if (st==="off") btns.push(["Check in","in","primary"]);
+  if (st==="on") { btns.push(["Start lunch / break","break","ghost"]); btns.push(["Check out","out","ghost"]); }
+  if (st==="lunch") { btns.push(["Back from lunch","resume","primary"]); btns.push(["Check out","out","ghost"]); }
+  if (st==="done") btns.push(["Resume work","resume","ghost"]);
+  if (d.events.length) btns.push(["Undo last","undo","ghost"]);
+  $("#clockBtns").innerHTML = btns.map(([t,a,c]) => '<button class="'+c+'" data-clock="'+a+'">'+t+'</button>').join("");
+  $$("#clockBtns [data-clock]").forEach(b => b.addEventListener("click", () => {
+    const d = dayData();
+    if (b.dataset.clock === "undo") d.events.pop();
+    else d.events.push({ type: b.dataset.clock, ts: Date.now() });
+    saveDay(d); renderWork(); renderLedger();
+  }));
+  const now = Date.now();
+  const worked = sumIv(workedIntervals(d, now));
+  const focused = sumIv(coveredIntervals(d));
+  const unacc = sumIv(subtractIv(workedIntervals(d, now), coveredIntervals(d)));
+  $("#stWorked").textContent = fmtHM(worked);
+  $("#stFocused").textContent = fmtHM(focused);
+  $("#stUnacc").textContent = fmtHM(unacc);
+  $("#stUnaccWrap").className = unacc > 30*60000 ? "bad" : "";
+  const nudge = $("#nudge");
+  if (st === "on" && !timer.running) {
+    const wi = workedIntervals(d, now); const cur = wi[wi.length-1];
+    const cov = coveredIntervals(d);
+    const lastCovEnd = cov.length ? cov[cov.length-1][1] : 0;
+    const sinceMs = now - Math.max(cur ? cur[0] : now, lastCovEnd);
+    if (sinceMs > 10*60000) {
+      $("#nudgeText").textContent = "You are checked in but nothing is tracking (" + fmtHM(sinceMs) + " untracked). Every hour must be accounted for.";
+      nudge.classList.add("show");
+    } else nudge.classList.remove("show");
+  } else nudge.classList.remove("show");
+}
+$("#nudgeBtn").addEventListener("click", () => { switchTab("focus"); });
+
+/* ================= FOCUS TIMER ================= */
+let timer = store.get("timer", { running:false, mode:"focus", endsAt:0, startedAt:0, label:"", pomos:0, paused:false, remainMs:0 });
+function saveTimer() { store.set("timer", timer); }
+function durs() {
+  return { focus: +$("#durFocus").value*60000, short: +$("#durShort").value*60000, long: +$("#durLong").value*60000, cycle: +$("#durCycle").value };
+}
+const savedDurs = store.get("durs", null);
+if (savedDurs) { $("#durFocus").value = savedDurs.f; $("#durShort").value = savedDurs.s; $("#durLong").value = savedDurs.l; $("#durCycle").value = savedDurs.c; }
+$$("#panel-focus .durrow input").forEach(i => i.addEventListener("change", () => {
+  store.set("durs", { f:+$("#durFocus").value, s:+$("#durShort").value, l:+$("#durLong").value, c:+$("#durCycle").value });
+}));
+function fillFocusLabels() {
+  const sel = $("#focusLabel"); if (!sel) return;
+  const cur = sel.value;
+  const opts = ['<option value="">Pick what you are working on</option>'];
+  for (const b of getSchedule()) opts.push('<option value="'+esc(b.title)+'">'+esc(b.time+" · "+b.title)+'</option>');
+  for (const t of store.get("todos", []).filter(t => !t.done).slice(0, 10)) opts.push('<option value="'+esc(t.text)+'">To-do: '+esc(t.text)+'</option>');
+  opts.push('<option value="__custom">Custom task...</option>');
+  sel.innerHTML = opts.join("");
+  sel.value = cur || "";
+}
+$("#focusLabel").addEventListener("change", () => {
+  $("#focusCustom").style.display = $("#focusLabel").value === "__custom" ? "" : "none";
+});
+function beep(n) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    for (let i = 0; i < n; i++) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value = 880; g.gain.value = 0.12;
+      o.start(ctx.currentTime + i*0.35); o.stop(ctx.currentTime + i*0.35 + 0.22);
+    }
+  } catch(e){}
+}
+function notify(title, body) {
+  if ("Notification" in window && Notification.permission === "granted") { try { new Notification(title, { body }); } catch(e){} }
+}
+function startTimer(mode) {
+  const dd = durs();
+  let label = $("#focusLabel").value === "__custom" ? $("#focusCustom").value.trim() : $("#focusLabel").value;
+  if (mode === "focus" && !label) label = "Focused work";
+  if ("Notification" in window && Notification.permission === "default") { try { Notification.requestPermission(); } catch(e){} }
+  timer = { running:true, paused:false, mode, label, startedAt: Date.now(), endsAt: Date.now() + (mode==="focus"?dd.focus:mode==="short"?dd.short:dd.long), pomos: timer.pomos, remainMs:0 };
+  saveTimer(); renderTimer();
+}
+function pauseTimer() { if (!timer.running || timer.paused) return; timer.paused = true; timer.remainMs = timer.endsAt - Date.now(); saveTimer(); renderTimer(); }
+function resumeTimer() { if (!timer.paused) return; timer.paused = false; timer.endsAt = Date.now() + timer.remainMs; saveTimer(); renderTimer(); }
+function logFocus(start, end, label) {
+  if (end - start < 60000) return;
+  const d = dayData(); d.logs.push({ start, end, label: label || "Focused work", kind:"focus" }); saveDay(d);
+}
+function stopTimer(finish) {
+  if (timer.mode === "focus" && (finish || Date.now() - timer.startedAt > 60000)) {
+    logFocus(timer.startedAt, finish ? timer.endsAt : Date.now(), timer.label);
+    if (finish) timer.pomos++;
+  }
+  timer.running = false; timer.paused = false; saveTimer();
+  renderTimer(); renderLedger(); renderWork();
+}
+function timerTick() {
+  if (!timer.running || timer.paused) return;
+  if (Date.now() >= timer.endsAt) {
+    const wasFocus = timer.mode === "focus";
+    stopTimer(true);
+    beep(wasFocus ? 3 : 2);
+    if (wasFocus) {
+      const dd = durs();
+      const nextLong = timer.pomos % dd.cycle === 0;
+      notify("Focus sprint done", "Logged " + (timer.label||"focus") + ". Take a " + (nextLong?"long":"short") + " break.");
+      timer.mode = nextLong ? "long" : "short"; saveTimer();
+    } else {
+      notify("Break over", "Back to it. Start the next focus sprint.");
+      timer.mode = "focus"; saveTimer();
+    }
+    renderTimer();
+  }
+}
+function renderTimer() {
+  const t = $("#timerTime"), m = $("#timerMode"), ctl = $("#timerCtl"), setup = $("#timerSetup");
+  const modeName = { focus:"Focus sprint", short:"Short break", long:"Long break" }[timer.mode] || "Focus sprint";
+  $("#timerTask").textContent = timer.running && timer.mode === "focus" ? timer.label : "";
+  if (timer.running) {
+    const rem = Math.max(0, (timer.paused ? timer.remainMs : timer.endsAt - Date.now()));
+    const mm = Math.floor(rem/60000), ss = Math.floor((rem%60000)/1000);
+    t.textContent = mm+":"+String(ss).padStart(2,"0");
+    m.textContent = modeName + (timer.paused ? " · paused" : " · running") + " · sprint "+(timer.pomos+ (timer.mode==="focus"?1:0))+" today";
+    setup.style.display = "none";
+    ctl.innerHTML = (timer.paused
+      ? '<button class="primary" data-t="resume">Resume</button>'
+      : '<button class="ghost" data-t="pause">Pause</button>')
+      + '<button class="ghost" data-t="finish">Finish now &amp; log</button>'
+      + '<button class="danger" data-t="abort">Discard</button>';
+  } else {
+    const dd = durs();
+    t.textContent = Math.round((timer.mode==="focus"?dd.focus:timer.mode==="short"?dd.short:dd.long)/60000)+":00";
+    m.textContent = "Ready · next: " + modeName + " · " + timer.pomos + " sprints logged today";
+    setup.style.display = "";
+    ctl.innerHTML = '<button class="primary" data-t="start">Start '+modeName.toLowerCase()+'</button>'
+      + (timer.mode !== "focus" ? '<button class="ghost" data-t="skipbreak">Skip break, start focus</button>' : "");
+  }
+  ctl.querySelectorAll("[data-t]").forEach(b => b.onclick = () => {
+    const a = b.dataset.t;
+    if (a==="start") startTimer(timer.mode);
+    if (a==="skipbreak") { timer.mode="focus"; saveTimer(); startTimer("focus"); }
+    if (a==="pause") pauseTimer();
+    if (a==="resume") resumeTimer();
+    if (a==="finish") { timer.endsAt = Date.now(); stopTimer(true); beep(2); }
+    if (a==="abort") stopTimer(false);
+  });
+}
+
+/* ================= LEDGER ================= */
+function renderLedger() {
+  const d = dayData(), now = Date.now();
+  const base = new Date(); base.setHours(0,0,0,0);
+  const work = workedIntervals(d, now), brk = breakIntervals(d, now), cov = coveredIntervals(d);
+  const gaps = subtractIv(work, cov);
+  let html = "";
+  for (let h = 7; h <= 19; h++) {
+    const lo = base.getTime()+h*3600000, hi = lo+3600000;
+    const segs = [];
+    for (const [s,e] of clipIv(work, lo, hi)) segs.push(["work", s, e]);
+    for (const [s,e] of clipIv(cov, lo, hi)) segs.push(["focus", s, e]);
+    for (const [s,e] of clipIv(brk, lo, hi)) segs.push(["lunch", s, e]);
+    for (const [s,e] of clipIv(gaps, lo, hi)) segs.push(["gap", s, e]);
+    const segHtml = segs.map(([cls, s, e]) =>
+      '<span class="seg '+cls+'" style="left:'+((s-lo)/36000)+'%;width:'+((e-s)/36000)+'%"></span>').join("");
+    const labels = d.logs.filter(l => l.start < hi && l.end > lo).map(l => l.label);
+    const note = d.notes[h] ? d.notes[h] : "";
+    const lblTxt = [...new Set(labels)].join(", ") + (note ? (labels.length?" · ":"")+note : "");
+    html += '<div class="lrow"><span class="hh">'+String(h).padStart(2,"0")+':00</span><div class="bar" data-h="'+h+'" title="Click to label this hour">'+segHtml+'</div><span class="note">'+esc(lblTxt)+'</span></div>';
+  }
+  $("#ledger").innerHTML = html;
+  $$("#ledger .bar").forEach(bar => bar.addEventListener("click", () => {
+    const h = +bar.dataset.h;
+    const d = dayData();
+    const cur = d.notes[h] || "";
+    const v = prompt("What happened during "+String(h).padStart(2,"0")+":00? (e.g. church errand, meeting, deep work without timer)", cur);
+    if (v === null) return;
+    if (v.trim()) {
+      d.notes[h] = v.trim();
+      const lo = base.getTime()+h*3600000, hi = lo+3600000;
+      const gapsHere = clipIv(subtractIv(workedIntervals(d, Date.now()), coveredIntervals(d)), lo, hi);
+      for (const [s,e] of gapsHere) d.logs.push({ start:s, end:e, label:v.trim(), kind:"manual" });
+    } else delete d.notes[h];
+    saveDay(d); renderLedger(); renderWork();
+  }));
+
+  const worked = sumIv(work), focused = sumIv(cov), unacc = sumIv(gaps);
+  const acct = worked ? Math.round((worked-unacc)/worked*100) : 0;
+  $("#dayStats").innerHTML =
+    stat("Worked", fmtHM(worked)) +
+    stat("Focused / logged", fmtHM(focused)) +
+    stat("Unaccounted", fmtHM(unacc), unacc > 30*60000 ? "bad" : "good") +
+    stat("Accountability", worked > 5*60000 ? acct+"%" : "–", worked > 30*60000 && acct < 80 ? "bad" : worked > 5*60000 ? "good" : "") +
+    stat("Sprints", String(timer.pomos));
+  renderHistory();
+}
+function stat(l, v, cls) { return '<div class="stat '+(cls||"")+'"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>'; }
+function renderHistory() {
+  const rows = [];
+  for (let i = 0; i < 14; i++) {
+    const dt = new Date(); dt.setDate(dt.getDate()-i);
+    const iso = dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+    const d = store.get("day."+iso, null);
+    if (!d || !d.events.length) continue;
+    const endTs = (lastEvent(d) && lastEvent(d).type==="out") ? lastEvent(d).ts : (i===0 ? Date.now() : null);
+    const work = workedIntervals(d, endTs || undefined);
+    const worked = sumIv(work), cov = coveredIntervals(d);
+    const unacc = sumIv(subtractIv(work, cov));
+    const acct = worked ? Math.round((worked-unacc)/worked*100) : 0;
+    const checks = store.get("check."+iso, {});
+    const inEv = d.events.find(e => e.type==="in"), outEv = [...d.events].reverse().find(e => e.type==="out");
+    rows.push("<tr><td>"+iso+"</td><td>"+(inEv?fmtT(inEv.ts):"–")+"</td><td>"+(outEv?fmtT(outEv.ts):"–")+"</td><td>"+fmtHM(worked)+"</td><td>"+fmtHM(sumIv(cov))+"</td><td>"+fmtHM(unacc)+"</td><td class=\""+(acct>=80?"pct-good":"pct-bad")+"\">"+acct+"%</td><td>"+Object.keys(checks).length+" ticks</td></tr>");
+  }
+  $("#histTable").innerHTML = "<tr><th>Date</th><th>In</th><th>Out</th><th>Worked</th><th>Logged</th><th>Unaccounted</th><th>Accountability</th><th>Routine</th></tr>" + (rows.join("") || "<tr><td colspan=8 style='color:var(--ink-3)'>No history yet. Check in to start tracking.</td></tr>");
+}
+
+/* ================= TODOS ================= */
+function renderTodos() {
+  const todos = store.get("todos", []);
+  $("#todoList").innerHTML = todos.length ? todos.map((t,i) =>
+    '<li class="'+(t.done?"done":"")+'"><input type="checkbox" data-i="'+i+'" '+(t.done?"checked":"")+'><span class="prio '+t.prio+'">'+t.prio.toUpperCase()+'</span><span class="txt">'+esc(t.text)+'</span><button class="del" data-i="'+i+'" title="Delete">&#10005;</button></li>').join("")
+    : '<li style="border:0;color:var(--ink-3);font-size:13px">Nothing here yet. Add your own tasks above; they stay until you clear them.</li>';
+  $$("#todoList input").forEach(cb => cb.addEventListener("change", () => {
+    const todos = store.get("todos", []); todos[cb.dataset.i].done = cb.checked; store.set("todos", todos); renderTodos(); fillFocusLabels();
+  }));
+  $$("#todoList .del").forEach(b => b.addEventListener("click", () => {
+    const todos = store.get("todos", []); todos.splice(b.dataset.i,1); store.set("todos", todos); renderTodos(); fillFocusLabels();
+  }));
+}
+$("#todoAdd").addEventListener("click", addTodo);
+$("#todoText").addEventListener("keydown", e => { if (e.key === "Enter") addTodo(); });
+function addTodo() {
+  const t = $("#todoText").value.trim(); if (!t) return;
+  const todos = store.get("todos", []);
+  todos.unshift({ text: t, prio: $("#todoPrio").value, done: false, added: todayISO() });
+  store.set("todos", todos); $("#todoText").value = ""; renderTodos(); fillFocusLabels();
+}
+$("#clearDone").addEventListener("click", () => {
+  store.set("todos", store.get("todos", []).filter(t => !t.done)); renderTodos(); fillFocusLabels();
+});
+
+/* ================= TEMPLATES (editable) ================= */
+const DEFAULT_TEMPLATES = [
+  { id:"cancel_fulfilled", title:"Cancel order (already fulfilled) - P1", body:"Hi {Name},\n\nThank you for reaching out to us. We take order cancellations very seriously, so I will do my best to ensure this matter is resolved for you.\n\nAt the time of reviewing your cancellation request for order #{ORDER}, here's the information I can provide from our fulfillment team: the order has already been processed and fulfilled, which means it has already been prepared for shipping, and unfortunately, cancellation is no longer possible.\n\nThat said, I want to resolve this matter for you in the best way possible. Could you please let me know why you want to cancel the order? This could help me provide a better solution, if possible.\n\nLooking forward to your response, and thank you so much for your understanding! 💜" },
+  { id:"subscription", title:"Subscription cancellation - pause instructions", body:"Hi {Name},\n\nThank you so much for getting in touch — I completely understand your desire to cancel your subscription, and I'm here to help you sort this out.\n\nBecause of how our subscription billing works, we're not able to process cancellations until after the second month. This is in line with our Subscription Policy, which you accepted when placing your order. The good news is you can pause your subscription right away to stop any future charges:\n\n1. Go to your Customer Portal and log in using your customer email.\n2. Click on the Profile tab.\n3. Scroll down to Subscriptions and select Pause.\n\nOnce paused, no further charges will be made, and you can resume anytime. If you have any trouble accessing your portal, just let me know — I'm happy to help! 💜" },
+  { id:"shade_pmp", title:"Shade mismatch - Perfect Match Promise", body:"Hi {Name},\n\nThank you for reaching out! I'm so sorry to hear that you received the wrong colors. According to your order information, you were meant to receive {shades}. Could you confirm if you received these shades?\n\nIf so, we'd love to assist you with a shade exchange under our Perfect Match Promise — a one-time, free replacement of your shade. Which shade would you like as a replacement?\n\nIf you're unsure, here's a quick guide:\nVery Fair: Ivory · Fair: Buff Beige · Medium: Warm Honey · Medium/Light Brown: Honey Almond · Light Brown/Brown: Caramel Glow · Brown/Dark Brown: Deep Mocha\n\nI'm excited to hear back from you so we can make sure you're absolutely delighted with your purchase! 💜" },
+  { id:"replacement_confirm", title:"Replacement accepted - new order confirmation", body:"Hi {Name},\n\nThank you so much for getting back to us and for accepting our offer!\n\nI've already created a new order for you containing {product & shade} — your new order number is #{NEW ORDER}. As soon as it ships you'll receive an email with the tracking number.\n\nAs for the products you already have, feel free to share them with a friend or family member! 💜\n\nIt has been a pleasure assisting you — if anything comes up, don't hesitate to reach out." },
+  { id:"product_discovery", title:"Product issue - discovery question", body:"Hi {Name},\n\nThanks so much for getting in touch! I'm really sorry to hear you're not happy with your {product}. We always want your skin to feel happy and glowing. 💜\n\nCould you share a bit more about what didn't quite work for you? Maybe the texture, the scent, or how it felt on your skin? Your feedback helps me understand what went wrong and how I can provide the best solution for you.\n\nCan't wait to hear from you!" },
+  { id:"partial_refund_50", title:"50% partial refund offer (quality/coverage)", body:"Hi {Name},\n\nThank you so much for reaching out and sharing your experience. I'm truly sorry the products didn't meet your expectations — we appreciate you giving them an honest try. That said, let's make this right. 💜\n\nIn line with our refund policy, I'd like to offer you a 50% partial refund for your order. This way you won't have to go through the hassle of returning the items — you can keep them or share them with someone who might benefit.\n\nIf this works for you, let me know and I'll take care of the rest!" },
+  { id:"delivery_failed_refund", title:"Delivery failed - refund confirmation", body:"Thank you for reaching out, and I truly apologize for the frustration you're experiencing with your order. I completely understand how concerning it is when you've paid for something and it hasn't arrived.\n\nAfter looking into your order, I can confirm the delivery unfortunately failed. Your order has been fully refunded — you should see the amount reflected in your account shortly.\n\nThank you for choosing Serentia, and we hope to serve you better in the future!" },
+  { id:"cant_find_order", title:"Can't locate order - ask for details", body:"I have looked into your order history and can only find order #{ORDER}. Perhaps the subsequent orders were placed using a different email address. Could you please provide either the email address you used for the most recent order or the order number, and I'll look further into the matter.\n\nWe want to help you and ensure that you can be happy with your order. Looking forward to your response." },
+  { id:"outside_window", title:"Refund outside 30-day window - decline", body:"Hello {Name}!\n\nThank you for sharing the details of your situation. After reviewing your order history, your order was placed on {order date} and delivery was confirmed on {delivery date}. Unfortunately, this falls outside our 30-day return window, which means we are unable to process a return at this time. This policy is in place to ensure we can manage returns efficiently and maintain the quality of our service.\n\nI truly appreciate your understanding. If there's anything else I can help you with — suggestions on how to use the products or any other questions — please don't hesitate to ask!" },
+  { id:"missed_emails", title:"Missed previous emails - apology + triage", body:"I sincerely apologize that your previous emails haven't received a response — that's not the level of service we aim to provide, and I understand how frustrating that must be.\n\nTo help me locate your previous messages, could you please reply with:\n1. What your concern relates to (order issue, product question, shipping, or something else)\n2. Any order numbers or dates\n3. A brief summary of what you've already contacted us about\n\nOnce I have these details, I'll personally ensure your issue gets the attention it deserves.\n\nThank you for your patience, and again, I'm sorry for the delay." },
+  { id:"reship_offer", title:"Repeated delivery failure - reship offer", body:"Hi {Name},\n\nThank you for your patience as we look into your order. I sincerely apologize for the delay. It appears the delivery attempt has failed again, which is certainly not the experience we want for our valued customers.\n\nTo make amends, we would be more than happy to reship your order so you receive your products without any further hassle. If you'd like us to proceed, let me know and I'll take care of the rest!" },
+  { id:"ownership_full_refund", title:"Service failure - ownership + full refund", body:"This is Khethiwe and I will be assisting you going forward. Apologies about the experience you've had — customer satisfaction is our priority and I am working to make things right. I absolutely understand your frustration. That said, let's make this right.\n\nI have requested a full refund for your order. I'll personally ensure your issue gets the attention it deserves.\n\nThank you for your patience, and again, I'm sorry for the delay." },
+  { id:"refund_processed", title:"Refund processed - confirmation", body:"Your full refund has been successfully processed back to your original payment method. You should see the funds in your account within 3-5 business days, depending on your financial institution.\n\nThere's no need to return the items — you're welcome to keep them or pass them along to someone who might enjoy them.\n\nIf there's anything else I can assist with, please reach out any time. 💜" },
+  { id:"delayed_transit", title:"Order delayed in transit - reassure + tracking", body:"Hi {Name},\n\nThank you for reaching out about your order #{ORDER} — I completely understand wanting to know where it is, and I'm happy to help.\n\nI've checked the live tracking for you: your order is currently {tracking status}. Our standard delivery window is 5-10 business days, and your order is {within/outside} that window. You can follow it any time here: serentia-shop.com/pages/track-order\n\nI'll also keep an eye on it from our side and check in if anything changes. If it hasn't moved in the next few days, contact me and I'll escalate it with our fulfillment team right away. 💜" },
+  { id:"pod_process", title:"Delivered but not received - POD process", body:"Hi {Name},\n\nThank you for letting us know — I understand how worrying it is when tracking says delivered but you don't have your package. Let me help you get to the bottom of this.\n\nI've escalated this to our fulfillment team to request the Proof of Delivery and shipping label for your order. While we wait for that, could you please check with neighbours, your building reception, or any safe drop-off location? Packages are sometimes left in unexpected spots.\n\nAs soon as I receive the Proof of Delivery I'll share it with you to confirm the delivery details. We'll take it from there together. 💜" },
+  { id:"skin_reaction", title:"Skin reaction - care + information gathering", body:"Hi {Name},\n\nThank you for telling us about this, and I'm so sorry to hear about your reaction — please stop using the product immediately.\n\nSo I can help you properly, could you please share:\n1. A photo of the reaction\n2. Whether you've consulted a healthcare professional\n3. Any known sensitivities or allergies\n\nAll our ingredients are listed on the website and we always recommend a patch test for sensitive skin — but your wellbeing comes first, and I want to make sure we resolve this with care. As an exception to our policy on sensitivities disclosed after purchase, I'd like to offer you a 50% refund on your order once I hear back from you.\n\nIf your reaction is severe or you've needed medical treatment, please let me know right away. 💜" },
+  { id:"chargeback_ack", title:"Chargeback / legal - the ONLY reply", body:"I've noted your concern and have escalated this to our management team, who will be in touch shortly." },
+  { id:"social_ack", title:"Social media complaint - public reply", body:"We're sorry to hear this — we've sent you a DM to sort this out right away." },
+  { id:"ugc_zendrop", title:"UGC request to Zendrop", body:"Hi Zendrop Team (@Rachel Zhang @Sharmaine Dagos)\n\nPlease process the following {product} shipping request(s):\n\nName: {name}\nPhone Number: {phone}\nAddress: {full address}\nEmail: {email}\nProducts to Send: {SKUs}\n\nPlease let me know when the products ship and revert with a tracking number. Thank you." }
+];
+function getTemplates() {
+  const ov = store.get("tplOverrides", {});
+  const removed = store.get("tplRemoved", []);
+  const custom = store.get("tplCustom", []);
+  const base = DEFAULT_TEMPLATES.filter(t => !removed.includes(t.id)).map(t => ov[t.id] ? { ...t, ...ov[t.id] } : t);
+  return base.concat(custom);
+}
+function tplById(id) { return getTemplates().find(t => t.id === id); }
+function renderTemplates() {
+  const tpls = getTemplates();
+  $("#tplList").innerHTML = tpls.map(t => {
+    const isCustom = t.id.startsWith("custom_");
+    return '<div class="tpl" data-tpl="'+t.id+'">'
+      + '<div class="head"><h3>'+esc(t.title)+'</h3><div class="acts">'
+      + '<button class="ghost" data-copytpl="'+t.id+'">Copy</button>'
+      + '<button class="ghost" data-edittpl="'+t.id+'">Edit</button>'
+      + (isCustom ? '<button class="danger" data-deltpl="'+t.id+'">Delete</button>' : '<button class="ghost" data-resettpl="'+t.id+'">Reset</button>')
+      + '</div></div>'
+      + '<pre>'+esc(t.body)+'</pre>'
+      + '<div class="editor"><input data-f="title" value="'+esc(t.title)+'"><textarea data-f="body">'+esc(t.body)+'</textarea>'
+      + '<div class="btnrow" style="margin-top:8px"><button class="primary" data-savetpl="'+t.id+'">Save</button><button class="ghost" data-canceltpl="'+t.id+'">Cancel</button></div></div>'
+      + '</div>';
+  }).join("");
+  $$(".tpl .head").forEach(h => h.addEventListener("click", e => {
+    if (e.target.closest("button")) return;
+    h.parentElement.classList.toggle("open");
+  }));
+  $$("[data-copytpl]").forEach(b => b.addEventListener("click", async () => {
+    const t = tplById(b.dataset.copytpl); if (!t) return;
+    try { await navigator.clipboard.writeText(t.body); } catch(e) {
+      const ta = document.createElement("textarea"); ta.value = t.body; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    b.textContent = "Copied"; b.classList.add("copied");
+    setTimeout(() => { b.textContent = "Copy"; b.classList.remove("copied"); }, 1500);
+  }));
+  $$("[data-edittpl]").forEach(b => b.addEventListener("click", () => {
+    b.closest(".tpl").classList.add("editing", "open");
+  }));
+  $$("[data-canceltpl]").forEach(b => b.addEventListener("click", () => renderTemplates()));
+  $$("[data-savetpl]").forEach(b => b.addEventListener("click", () => {
+    const id = b.dataset.savetpl, box = b.closest(".tpl");
+    const title = box.querySelector('[data-f="title"]').value.trim();
+    const body = box.querySelector('[data-f="body"]').value;
+    if (id.startsWith("custom_")) {
+      const custom = store.get("tplCustom", []);
+      const c = custom.find(x => x.id === id); if (c) { c.title = title; c.body = body; store.set("tplCustom", custom); }
+    } else {
+      const ov = store.get("tplOverrides", {}); ov[id] = { title, body }; store.set("tplOverrides", ov);
+    }
+    renderTemplates();
+  }));
+  $$("[data-resettpl]").forEach(b => b.addEventListener("click", () => {
+    const ov = store.get("tplOverrides", {}); delete ov[b.dataset.resettpl]; store.set("tplOverrides", ov); renderTemplates();
+  }));
+  $$("[data-deltpl]").forEach(b => b.addEventListener("click", () => {
+    if (!confirm("Delete this custom template?")) return;
+    store.set("tplCustom", store.get("tplCustom", []).filter(x => x.id !== b.dataset.deltpl)); renderTemplates();
+  }));
+}
+$("#tplAdd").addEventListener("click", () => {
+  const custom = store.get("tplCustom", []);
+  custom.unshift({ id: "custom_"+Date.now(), title: "New template", body: "Hi {Name},\n\n" });
+  store.set("tplCustom", custom); renderTemplates();
+  const first = $("#tplList .tpl"); if (first) first.classList.add("editing", "open");
+});
+$("#tplResetAll").addEventListener("click", () => {
+  if (!confirm("Reset ALL templates to the SOP defaults? Custom templates and edits will be removed.")) return;
+  store.del("tplOverrides"); store.del("tplCustom"); store.del("tplRemoved"); renderTemplates();
+});
+
+/* ================= RESPOND PORTAL ================= */
+const CATEGORIES = [
+  { id:"chargeback", code:"F1", name:"Chargeback filed / threatened", tier:"P1", rx:/charge\s?back|dispute (this|the charge)|(bank|card).{0,20}dispute|disputed the (charge|payment)/i,
+    escalate:"ESCALATE TO OPS/FOUNDER IMMEDIATELY. Do not attempt to resolve. Acknowledge receipt only. No promises, admissions, or concessions. Document the full ticket history.",
+    steps:["Escalate to management immediately, before or alongside any reply","Send acknowledgement-only response (draft below)","Document full ticket history","Begin evidence pack: tracking, POD, communication log, policy reference (see Chargebacks SOP)"],
+    refund:"No refund discussion until management guidance.", template:"chargeback_ack" },
+  { id:"legal", code:"F1", name:"Legal / media threat", tier:"P1", rx:/legal action|lawyer|attorney|sue|suing|court|small claims|consumer protection|report (you|this) to|bbb|news|press/i,
+    escalate:"ESCALATE TO OPS/FOUNDER IMMEDIATELY. Calm, neutral, non-committal tone only.",
+    steps:["Escalate immediately","Acknowledge receipt only (draft below)","No promises, admissions, or apologies beyond acknowledgement","Document everything"],
+    refund:"None until management guidance.", template:"chargeback_ack" },
+  { id:"reaction", code:"A3", name:"Skin reaction", tier:"P2",
+    rx:/reaction|rash|burn(ed|ing|s)?\b|itch|breakout|broke (me )?out|allerg|hives|irritat|swollen|redness/i,
+    escalate:"If severe or medical treatment is mentioned: escalate to Ops Manager IMMEDIATELY. Otherwise P2 minimum.",
+    steps:["Lead with empathy; advise stopping use immediately","Ask for: photo, healthcare consult status, known sensitivities/allergies","Gently note ingredients are on the website; patch test recommended","Offer 50% partial refund as an exception, with care","Severe / medical treatment: escalate to OM immediately","Log in CS Learnings (patterns go to product team)"],
+    refund:"50% partial refund as exception (no refunds for sensitivities disclosed after purchase).", template:"skin_reaction" },
+  { id:"subscription", code:"C1", name:"Subscription cancellation", tier:"P1",
+    rx:/subscri|recurring|billed (again|monthly)|keeps? charging|monthly charge/i,
+    steps:["Confirm the subscription in the system","Explain cancellations process only after second month (Subscription Policy)","Give pause instructions (Customer Portal, Profile, Subscriptions, Pause)","Confirm no further charges while paused"],
+    refund:"Per Subscription Policy; escalate disputed subscription charges.", template:"subscription" },
+  { id:"cancel", code:"C1", name:"Order cancellation request", tier:"P1",
+    rx:/cancel/i,
+    steps:["Check fulfillment status IMMEDIATELY (time-critical)","Pre-fulfillment: cancel + full refund (3-5 business days)","Post-fulfillment: cannot cancel; ask reason, suggest trying product; escalate full refund (excl. shipping) if not","Accidental order: same logic"],
+    refund:"Pre-ship: full refund. Post-ship: escalate full refund excluding shipping.", template:"cancel_fulfilled" },
+  { id:"address", code:"C3", name:"Address change / wrong address", tier:"P1",
+    rx:/(chang|updat|fix|correct|wrong).{0,20}address|address.{0,20}(chang|updat|wrong|incorrect)|moved (house|home|apartment)/i,
+    steps:["TIME-CRITICAL: respond within ~30 minutes","Check fulfillment status immediately","Pre-fulfillment: update address / escalate to fulfillment urgently","Post-fulfillment: cannot change; if delivery fails, Returned-to-Warehouse flow applies","Customer's own error: $15 store credit with OM approval"],
+    refund:"$15 store credit if customer error (OM approval).", template:"cant_find_order" },
+  { id:"delivered_not_received", code:"B2", name:"Delivered but not received", tier:"P1",
+    rx:/(says|marked|shows).{0,15}delivered|delivered but|never (got|received).{0,25}(package|order|it)|didn'?t receive.{0,20}(but|although)/i,
+    steps:["Escalate to fulfillment: request Proof of Delivery + shipping label","Advise checking neighbours, reception, safe locations","Share POD when received; ask customer to confirm or deny","POD accurate: no refund, direct to courier","POD inaccurate/unavailable: escalate to OM for full reship or refund","Document EVERY step (top chargeback source)"],
+    refund:"POD accurate: none (repeat buyer: $15 credit; VIP: 50% or reship). No POD: full reship or refund.", template:"pod_process" },
+  { id:"missing_item", code:"B3", name:"Missing item from order", tier:"P2",
+    rx:/missing|only received|item (was )?not (in|included)|incomplete (order|package)|short(ed)? (an )?item/i,
+    steps:["Confirm order contents vs claim","Verify delivery date: must report within 5 days of delivery","Ask for photos of what arrived","Escalate to fulfillment for the shipping label (confirms what was packed)","Confirmed missing: free replacement, no return","All items confirmed shipped: explain; escalate to TL if difficult"],
+    refund:"Confirmed missing: free replacement shipment.", template:"missed_emails" },
+  { id:"delayed", code:"B1", name:"In transit: delayed / WISMO", tier:"P3",
+    rx:/where('?s| is) my (order|package)|hasn'?t (arrived|shipped|moved)|still (waiting|hasn'?t)|delay|taking (so|too) long|no (tracking )?update|when will (it|my order) arrive|track/i,
+    steps:["Verify ACTUAL tracking status before responding, never assume","Within 5-10 business days: reassure + tracking link + realistic expectations","Outside window: proactive apology; get updated ETA from fulfillment","Stuck 3+ days beyond ETA: escalate for investigation, tell customer the timeline","Confirmed lost: reship or full refund, customer's choice"],
+    refund:"Only if confirmed lost: full refund or reship (customer preference).", template:"delayed_transit" },
+  { id:"returned_wh", code:"B4", name:"Returned to warehouse", tier:"P2",
+    rx:/returned to (sender|warehouse)|sent back to|rts\b|failed delivery attempts/i,
+    steps:["Notify customer immediately, don't wait for them","Escalate to fulfillment for update","Address was correct: reship at no cost","Customer's address error: $15 store credit with OM approval","No longer wants order: refund minus original shipping"],
+    refund:"Correct address: free reship. Customer error: $15 credit. Refund minus shipping if unwanted.", template:"reship_offer" },
+  { id:"customs", code:"B6", name:"Customs / tariff delay", tier:"P3",
+    rx:/customs|tariff|import (dut|tax|fee)|held at (the )?border/i,
+    steps:["Acknowledge: outside our control but frustration is valid","Explain what a customs delay means","Realistic ETA from fulfillment","Delay over 20 business days: full refund as goodwill (OM approval)","Customer accepts delay: keep ticket open, check in every 1-3 business days"],
+    refund:"Over 20 business days: full refund goodwill (OM approval).", template:"delayed_transit" },
+  { id:"shade", code:"A1", name:"Shade mismatch / wrong colour", tier:"P3",
+    rx:/shade|too (dark|light|orange|pale)|wrong colou?r|colou?r (is|was) (wrong|off)|doesn'?t match my skin|mismatch/i,
+    steps:["Acknowledge: shade matching is genuinely difficult","Offer Perfect Match Promise: once-off FREE shade replacement","Unsure of shade: ask for natural-light photo / skin tone / foundation reference","Declines replacement: 50% refund (VIP/3+ purchases: consider full)","Declines partial: escalate to OM with the full exchange documented","Escalate all shade refunds above $60"],
+    refund:"PMP first. Declined: 50%. VIP/3+ purchases: full refund consideration. Escalate >$60.", template:"shade_pmp" },
+  { id:"coverage", code:"A2", name:"Coverage / quality issue", tier:"P3",
+    rx:/coverage|doesn'?t (cover|work|last)|patchy|cakey|creas|quality|didn'?t work|not (satisfied|happy) with (the )?(product|cream)|disappointed with (the )?(product|cream)/i,
+    steps:["Acknowledge frustration without confirming a defect yet","Offer application instructions (coverage is often technique)","Offer new formula free under PMP if available","Declined: 50% partial refund","Instructions followed + still unhappy: escalate to OM","Log in CS Learnings for the product team"],
+    refund:"50%. Full only with documented defect evidence + OM approval.", template:"partial_refund_50" },
+  { id:"scent", code:"A4", name:"Smell / scent issue", tier:"P3",
+    rx:/smell|scent|odou?r|fragrance|stink/i,
+    steps:["Acknowledge: scent is deeply personal","Explain the intended scent profile","Offer fresh replacement if they think the batch is off","Refuses replacement: 50% partial refund","No full refund for scent preference; explain why"],
+    refund:"50% partial refund.", template:"partial_refund_50" },
+  { id:"packaging", code:"A5", name:"Damaged packaging / product", tier:"P2",
+    rx:/damaged|crushed|broken|leak|shattered|arrived (open|smashed)/i,
+    steps:["Ask for a photo of the damage","Outer packaging only: apologise, product integrity unaffected, encourage trying it","Product affected: offer replacement","Replacement declined: 50% partial refund (full refund if genuinely our-fault damage per matrix)","Log all packaging damage: patterns inform fulfillment"],
+    refund:"Our-fault product damage: FULL refund (matrix). Outer box only: none needed.", template:"product_discovery" },
+  { id:"refund_general", code:"D1", name:"Refund request (general)", tier:"P2",
+    rx:/refund|money back|return (it|the|my)/i,
+    steps:["All refunds route through the Ops Manager (that's you): apply the matrix","Identify the ROOT issue first (why do they want the refund?)","Check the 30-day window from delivery","Check buyer profile: first-time / repeat / VIP","Apply the matrix row; explain the WHY","Log the refund against the 2% tracker"],
+    refund:"Per Refund Decision Matrix (see Guide tab).", template:"partial_refund_50" },
+  { id:"trustpilot", code:"F2", name:"Trustpilot review mention", tier:"P2",
+    rx:/trustpilot|left (you )?a review|posted a review/i,
+    steps:["Respond to the public review (all reviews get responses)","Negative: acknowledge publicly, apologise for experience, invite direct contact; never argue publicly","Resolve the underlying issue in Re:amaze proactively","Under 3 stars: personal follow-up within 24h"],
+    refund:"Per underlying issue's matrix row.", template:"ownership_full_refund" },
+  { id:"general", code:"E2", name:"General inquiry", tier:"P3", rx:/./,
+    steps:["Identify what they actually need (order status, product info, shade help)","Product questions: answer from the product listing; never guess","Shade help: use the shade guide or offer PMP","If not covered anywhere: ask team lead / Founder, never invent"],
+    refund:"N/A", template:"product_discovery" }
+];
+const ord = ["chargeback","legal","reaction","subscription","address","delivered_not_received","missing_item","returned_wh","customs","cancel","shade","coverage","scent","packaging","trustpilot","delayed","refund_general","general"];
+function classifyMsg(msg) {
+  for (const id of ord) {
+    const c = CATEGORIES.find(x => x.id === id);
+    if (c.rx.test(msg)) return c;
+  }
+  return CATEGORIES.find(x => x.id === "general");
+}
+(function fillOverride(){
+  $("#rOverride").innerHTML = '<option value="">Auto-detect category</option>' +
+    CATEGORIES.map(c => '<option value="'+c.id+'">'+c.code+' · '+esc(c.name)+'</option>').join("");
+})();
+$("#rGo").addEventListener("click", () => {
+  const msg = $("#rMsg").value.trim();
+  const name = $("#rName").value.trim() || "there";
+  const order = $("#rOrder").value.trim();
+  const count = +$("#rCount").value || 1;
+  const value = +$("#rValue").value || 0;
+  const contacts = +$("#rContacts").value || 1;
+  if (!msg && !$("#rOverride").value) { $("#rOut").innerHTML = '<div class="alertbox warn">Paste the customer message (or pick a category manually).</div>'; return; }
+  const cat = $("#rOverride").value ? CATEGORIES.find(c => c.id === $("#rOverride").value) : classifyMsg(msg);
+  const vip = count >= 2 || value >= 100;
+  const severe = /doctor|hospital|medical|dermatolog|treatment|emergency/i.test(msg);
+  const profile = vip ? "VIP" : count >= 2 ? "Repeat buyer" : "First-time buyer";
+  let html = '<div class="classify">'
+    + '<span class="chip">'+cat.code+' · '+esc(cat.name)+'</span>'
+    + '<span class="chip '+(cat.tier==="P1"?"crit":cat.tier==="P2"?"warn":"")+'">'+(vip?"VIP priority":cat.tier)+'</span>'
+    + (vip ? '<span class="chip vip">'+profile+' ('+count+' purchases'+(value?', $'+value:'')+')</span>' : '<span class="chip">'+profile+'</span>')
+    + '<span class="chip">First response: '+(vip||cat.tier==="P1"?"4h":cat.tier==="P2"?"6h":"8h")+' · Resolve: '+(vip||cat.tier==="P1"?"12h":cat.tier==="P2"?"24h":"48h")+'</span>'
+    + '</div>';
+  const warns = [];
+  if (cat.escalate) warns.push(cat.escalate);
+  if (severe && cat.id === "reaction") warns.push("Medical treatment mentioned: SEVERE reaction. Escalate to Ops Manager immediately.");
+  if (contacts >= 3) warns.push("3rd+ contact on the same issue: escalation trigger (repeat contact). Escalate to Ops Manager.");
+  if (vip) warns.push("VIP protocol: prioritise above P2/P3, reference the relationship ('As one of our valued returning customers...'), consider FULL refund over partial, TL follow-up within 1h if unresolved.");
+  if (warns.length) html += warns.map(w => '<div class="alertbox '+(cat.escalate||severe?'crit':'warn')+'">'+esc(w)+'</div>').join("");
+  html += '<div class="alertbox info"><strong>Refund guidance ('+profile+'):</strong> '+esc(cat.refund)+'</div>';
+  html += '<h2 style="margin-top:14px">How to resolve (SOP steps)</h2><ol class="steps">'+cat.steps.map(s => '<li>'+esc(s)+'</li>').join("")+'</ol>';
+  const tpl = tplById(cat.template);
+  if (tpl) {
+    let draft = tpl.body
+      .replace(/\{Name\}/g, name.charAt(0).toUpperCase()+name.slice(1))
+      .replace(/\{ORDER\}/g, order || "ORDER");
+    if (vip && !cat.escalate) draft = draft.replace(/^(Hi [^,]+,)/, "$1\n\nAs one of our valued returning customers, I want to make sure we take extra good care of you here.");
+    html += '<h2 style="margin-top:14px">Draft reply <span class="ref">based on template: '+esc(tpl.title)+' · personalise before sending</span></h2>'
+      + '<pre class="draft" id="draftOut">'+esc(draft)+'</pre>'
+      + '<div class="btnrow" style="margin-top:8px"><button class="primary" id="copyDraft">Copy draft</button></div>'
+      + '<p class="ref" style="margin-top:8px">Remember: edit before sending. Reference their exact words, explain the why behind any policy, and sign off in your voice. For tricky ones, paste the thread to Claude in the Serentia repo for a fully tailored draft.</p>';
+  }
+  $("#rOut").innerHTML = html;
+  const cd = $("#copyDraft");
+  if (cd) cd.addEventListener("click", async () => {
+    const text = $("#draftOut").textContent;
+    try { await navigator.clipboard.writeText(text); } catch(e) {
+      const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    cd.textContent = "Copied"; setTimeout(() => cd.textContent = "Copy draft", 1500);
+  });
+});
+
+/* ================= ASK SOPS CHATBOT ================= */
+const KB = [
+  { t:"Refund Decision Matrix", k:"refund matrix amount how much partial full percent change of mind money back decision d1",
+    b:"<p>All refund decisions run through this matrix (deviations need OM approval, i.e. yours, documented). No physical return is ever required.</p><div class='tablewrap'><table><tr><th>Issue</th><th>First-time</th><th>Repeat (2+)</th><th>VIP (2+/$100+)</th></tr><tr><td>Not received, no POD</td><td colspan='3'>Full refund or reship</td></tr><tr><td>Not received, POD confirmed</td><td>Direct to courier</td><td>$15 goodwill credit</td><td>50% refund or reship</td></tr><tr><td>Defect/damage (our fault)</td><td colspan='3'>Full refund</td></tr><tr><td>Shade mismatch</td><td>PMP; 50% if declined</td><td>PMP or 50%</td><td>PMP or 50%</td></tr><tr><td>Coverage/quality</td><td colspan='3'>50%</td></tr><tr><td>Scent preference</td><td colspan='3'>50%</td></tr><tr><td>Change of mind (within 30d)</td><td>Exchange or 30% credit</td><td>Exchange or 30% credit</td><td>Exchange or 50% refund</td></tr><tr><td>Change of mind (after 30d)</td><td>No refund</td><td>20% goodwill credit</td><td>30% goodwill refund</td></tr><tr><td>Falsely fulfilled, cancel</td><td colspan='3'>Full refund, no exceptions</td></tr></table></div><p>Always explain the WHY. Log every refund to the CS Dashboard Returns/Refunds tab and the 2% tracker. Escalate shade refunds above $60.</p>", s:"CS Manual D1" },
+  { t:"SLA tiers and response times", k:"sla response time how long resolution tier p1 p2 p3 vip first response hours breach",
+    b:"<p>SLAs run 24/7. P1/VIP (lost order, duplicate charge, payment failure, chargeback): first response 4h, resolution 12h. P2 (defect, wrong item, replacement, falsely fulfilled): 6h / 24h. P3 (shipping update, shade query, general inquiry): 8h / 48h.</p><p>Any ticket approaching its limit unresolved: escalate to team lead immediately and document the reason for every breach. Classify every ticket within 15 minutes. Overall FRT KPI is 6 hours.</p>", s:"CS Manual, SLA framework" },
+  { t:"VIP protocol", k:"vip who is valued returning customer 100 two purchases priority protocol",
+    b:"<p>VIP = 2+ purchases OR order value $100+. Prioritise above all standard P2/P3 tickets. Reference the relationship explicitly ('As one of our valued returning customers...'). Consider FULL refunds rather than partial (escalate for approval where warranted). If unresolved at first contact, a personal team-lead follow-up is required within 1 hour; flag at 30 minutes.</p>", s:"CS Manual, classification" },
+  { t:"Escalation triggers", k:"escalate escalation when to trigger who founder team lead chargeback legal threat fraud repeat contact skin severe",
+    b:"<p>Escalate immediately, never delay: refund (any value) to OM · 3rd ticket same issue to OM · VIP unresolved 30 min to TL · delivery dispute without valid POD to TL · fraud suspicion to OM (flag only) · media/legal threat to OM IMMEDIATE · SLA breach risk to TL · chargeback mention to OM IMMEDIATE · severe skin reaction (medical treatment) to OM IMMEDIATE.</p><p>Escalation is not failure. Tell the customer you're elevating their case with a realistic timeframe, never silence.</p>", s:"CS Manual, escalation criteria" },
+  { t:"Perfect Match Promise and shade guide", k:"shade pmp perfect match promise wrong colour color exchange guide ivory buff beige warm honey almond caramel mocha recommend",
+    b:"<p>The Perfect Match Promise is a once-off, FREE shade replacement, always offered before any refund on shade issues. If the customer is unsure: ask for a natural-light photo, skin tone description, or their foundation shade.</p><p>Shade guide: Very Fair = Ivory · Fair = Buff Beige · Medium = Warm Honey · Medium/Light Brown = Honey Almond · Light Brown/Brown = Caramel Glow · Brown/Dark Brown = Deep Mocha.</p><p>Declined replacement: 50% refund (VIP or 3+ purchases: consider full). Escalate shade refunds above $60.</p>", s:"CS Manual A1/E1" },
+  { t:"Skin reactions", k:"skin reaction rash burn allergy allergic breakout hives sensitive ingredients what do",
+    b:"<p>Treat every skin reaction as P2 minimum. Lead with empathy, advise stopping use immediately. Ask for: photo, whether they consulted a healthcare professional, known sensitivities. Gently note all ingredients are on the website and patch tests are recommended. Offer a 50% partial refund as an exception (no refunds for sensitivities disclosed after purchase), explained with care.</p><p><strong>Severe or medical treatment mentioned: escalate to Ops Manager immediately.</strong> Log every reaction in CS Learnings.</p>", s:"CS Manual A3" },
+  { t:"Delivered but not received (POD process)", k:"delivered not received pod proof of delivery says delivered missing package stolen porch",
+    b:"<p>Most common chargeback source, follow exactly: 1) Escalate to fulfillment for Proof of Delivery + shipping label. 2) Tell customer to check neighbours/reception/safe spots. 3) Share POD; ask them to confirm or deny. 4) POD accurate: case closed, direct to courier (repeat buyer: $15 credit; VIP: 50% or reship). 5) POD denied or unavailable: escalate to OM for full reship or refund. Document every step.</p>", s:"CS Manual B2" },
+  { t:"Delayed orders and WISMO", k:"delayed late where is my order wismo tracking shipping time window 5 10 days stuck transit lost",
+    b:"<p>Verify actual tracking BEFORE responding, never assume. Within the 5-10 business day window: reassure, share serentia-shop.com/pages/track-order, set realistic expectations. Outside: proactive apology + updated ETA from fulfillment. Stuck 3+ business days beyond ETA with no movement: escalate for investigation and tell the customer the timeline. Confirmed lost: reship or full refund, customer's preference.</p>", s:"CS Manual B1/E3" },
+  { t:"Cancellations", k:"cancel cancellation order stop don't want accidental",
+    b:"<p>Check fulfillment status immediately. Pre-fulfillment: cancel + full refund (3-5 business days processing). Post-fulfillment: cannot cancel; suggest trying the product, otherwise escalate full refund excluding shipping. Accidental orders: same logic. 'Don't trust the company': empathy first, understand why; unresolvable: cancel and refund.</p>", s:"CS Manual C1" },
+  { t:"Subscription cancellations", k:"subscription cancel recurring monthly billed pause portal",
+    b:"<p>Cancellations can't be processed until after the second month (Subscription Policy accepted at checkout). Offer the pause immediately: Customer Portal, log in with customer email, Profile tab, Subscriptions, Pause. No further charges while paused, resume anytime.</p>", s:"Templates + Subscription Policy" },
+  { t:"Address changes", k:"address change wrong update urgent moved",
+    b:"<p>Time-critical: respond within ~30 minutes. Check fulfillment status immediately. Pre-fulfillment: update or escalate urgently before dispatch. Post-fulfillment: impossible to change; failed delivery goes to the Returned-to-Warehouse flow. Customer provided the wrong address: they bear responsibility, offer $15 store credit with OM approval.</p>", s:"CS Manual C3" },
+  { t:"Chargebacks procedure", k:"chargeback dispute evidence shopify paypal inr snad unauthorized billing duplicate resolution deadline win",
+    b:"<p>Check disputes daily; submit within 24h of the dispute and before the platform deadline. Same flow always, only Step-5 evidence changes: INR = tracking + label + POD · SNAD = product page + marketing + customer photos + correspondence · Unauthorized = transaction details + fulfillment evidence + fraud indicators · Billing = payment records + transaction IDs (true duplicate: just refund it).</p><p>Cross-verify SKU/tracking/name/address across platforms. Escalate BEFORE responding: fulfillment errors, fraud, repeat chargebackers, high-value. Final check: would an independent reviewer clearly understand why Serentia should win?</p>", s:"Ops Manual, chargebacks" },
+  { t:"Trustpilot responses", k:"trustpilot review respond star rating public negative reputation",
+    b:"<p>Respond to ALL reviews awaiting reply. Two goals: address the reviewer AND reassure future customers. Empathy for the experience, never admit fault where policy was followed, never argue. 1 star: de-escalate + correct inaccuracies. 2: accountability. 3: thank + acknowledge the gap. 4: appreciate + invite back. 5: personalise + strengthen loyalty.</p><p>Score under 3/5: personal follow-up within 24h. Reviewer identified in Re:amaze: reach out proactively. Verify facts and account before replying.</p>", s:"Ops Manual, Trustpilot" },
+  { t:"Zendrop escalation", k:"zendrop slack sharmaine rachel roman escalate fulfillment supplier contact who processing stuck follow up 24",
+    b:"<p>Decision tree: within SLA = log + monitor · single isolated issue = contact Zendrop, update sheet · repeat SKU/pattern = escalate + tag RISK SKU · no response in 24h = escalate. Founder ONLY for: refunds trending to 2%, 15+ day delivery pattern, recurring damage, multiple SKUs.</p><p>Contacts: Sharmaine Dagos (daily ops, shipping, inventory) · Rachel Zhang (China, factories, pricing) · Roman Ripo (structural strategy). Invoices: forward to Founder, never approve yourself. Founder messages: what's happening (1-2 lines), orders/$ involved, what Zendrop did, your recommendation.</p>", s:"Ops Manual, Zendrop comms" },
+  { t:"UGC / creator fulfillment", k:"ugc creator influencer clickup insense trybe seeding tracking coordinator product send",
+    b:"<p>You own the full chain: ClickUp request, Zendrop execution, tracking capture, dashboard visibility, delivery confirmation. Validate completeness first (name, phone, address, email, SKUs); anything missing goes back before Zendrop sees it. Send one clean message block per creator to Rachel + Sharmaine. UGC target: 24h processing. Share tracking with the coordinator the same day it's issued. Creator orders are campaign-critical, never standard shipping.</p>", s:"Ops Manual, UGC SOP" },
+  { t:"Facebook comments", k:"facebook comment social media meta hide delete negative public respond",
+    b:"<p>Hide negative comments, never delete. Never argue publicly. Answer with the first name, directly, warm and conversational. Order-specific issues: hide + direct to support with order number. Spam: hide immediately, report impersonators. Medical/product claims: approved info only. Unsure: verify internally first; escalate to Founder for campaign questions, unapproved claims, or brand-risk conversations.</p>", s:"Ops Manual, Facebook" },
+  { t:"KPIs and targets", k:"kpi target metric number sla compliance fcr csat escalation backlog refund 2% processing goal standard measure",
+    b:"<p>CS: FRT 6h or less · FCR 60%+ · CSAT 4.5+ · SLA compliance 95%+ · escalation rate 15% or less · zero tickets older than 24h at day end · scorecard 10/12+. Fulfillment: 24h processing · 5-10 business day shipping · tracking assigned within 24h · Zendrop threads escalated at 24h silence. Financial: refunds + replacements UNDER 2% of revenue (standing Founder-visibility item), chargeback evidence within 24h.</p>", s:"KB 09, all manuals" },
+  { t:"Tone and voice", k:"tone voice angry frustrated customer how speak empathy sound write style",
+    b:"<p>Angry: acknowledge the emotion FIRST, then solve; never defensive, never lead with policy. Confused: reassuring, step-by-step. Brief/transactional: direct and complete, no fluff. Happy: warm, reciprocal. Chargeback/legal: calm, neutral, escalate.</p><p>Rules: edit every macro, use their name and order, explain the WHY behind policy, solution first policy second. Magic phrase: 'I completely understand why you're frustrated, and I'm sorry for this experience. Let me make this right for you right now.'</p>", s:"CS Manual, voice" },
+  { t:"Daily routine and schedule", k:"schedule day routine what do when morning start time block creative lunch checkout daily workstream",
+    b:"<p>08:00 start-of-day sweep (ClickUp, Re:amaze + AI check, Zendrop issues sheet, backlog before 10:00) · 09:15 fulfillment & SLA block · 10:15 UGC · 10:45 Re:amaze pulse · 11:00-13:00 creative block 1 · 13:00 lunch · 14:00 CS deep block (refunds, escalations) · 15:00-16:00 creative block 2 (shipping updates, Insense and Trybe) · 16:00 reputation (Trustpilot + Facebook) · 16:30 end-of-day close (dashboard, 2% check, zero backlog, Founder EOD). Inbox touches at 8, 12 and 16 keep the P1 4-hour window safe.</p>", s:"KB 11, daily schedule" },
+  { t:"Refund authority and the 2% rule", k:"authority approve refund limit 80 2% percent revenue margin who processes",
+    b:"<p>All refunds route through the Ops Manager; CS only flags. You approve refunds per policy; the fast-path in the daily loop is up to $80/order, and everything must keep the combined refunds + replacements rate under 2% of revenue. Zendrop covers: damaged orders, orders outside SLA without valid explanation, incorrect items shipped. Outside policy: use judgment in the customer's and brand's best interest and flag to the Founder for visibility. LOG EVERY REFUND, logging is part of the refund.</p>", s:"Daily Ops F, Ops Manual daily loop" },
+  { t:"Product facts", k:"spf vegan cruelty free ingredients waterproof sweatproof mature skin fine lines product",
+    b:"<p>No SPF benefits (say so kindly). Vegan and cruelty-free: yes, confirmed. All ingredients are listed on the website. Sweat-proof and water-resistant. Designed with mature skin in mind, lightweight coverage. Allergy concerns: recommend consulting a healthcare provider. Never make claims not verified in product documentation.</p>", s:"CS Manual E4, Facebook SOP" },
+  { t:"Missing items", k:"missing item incomplete package short shipped less",
+    b:"<p>Confirm order contents vs claim. Report window: within 5 days of delivery. Ask for photos of what arrived. Escalate to fulfillment for the shipping label (confirms what was packed). Confirmed missing: free replacement shipment, no return. All items confirmed shipped: explain; escalate to TL if the customer is difficult.</p>", s:"CS Manual B3" },
+  { t:"Fraud and high-risk orders", k:"fraud high risk suspicious flagged scam abuse pattern",
+    b:"<p>Notify the customer their order was flagged high-risk and fulfillment is paused; never accuse. Ask them to confirm they recognise the order. No response in 3 business days: cancel and escalate full refund. Confirmed: fulfill and notify. Document meticulously in CS Learnings. Unusual claim patterns (multiple orders, identical issues): flag to OM.</p>", s:"CS Manual F3" },
+  { t:"Proactive communication", k:"proactive follow up touchpoint replacement 5 days shipped delayed apology before ask",
+    b:"<p>Mandatory touchpoints: order shipped = automated confirmation with tracking · delivery 3+ days past ETA = proactive apology + updated ETA · replacement sent = follow-up after 5 days to confirm receipt · Trustpilot under 3/5 = personal follow-up within 24 hours.</p>", s:"CS Manual, proactive comms" },
+  { t:"The 10-step ticket process", k:"process steps ticket handle workflow order of work classify tag macro send close csat log",
+    b:"<p>1 Classify (tier + VIP, SLA clock starts) · 2 Tag & verify (purchase count, value, prior tickets) · 3 Check escalation triggers BEFORE drafting · 4 Identify query type (playbook) · 5 Decide solution (matrix) · 6 Select & personalise macro (name, order, the WHY) · 7 Send · 8 Follow up proactively (P1/P2 within 24h) · 9 Close & trigger CSAT · 10 Log unusual scenarios in CS Learnings.</p>", s:"CS Manual, SOP" }
+];
+function askBot(q) {
+  const words = q.toLowerCase().replace(/[^a-z0-9\s%$+]/g, " ").split(/\s+/).filter(w => w.length > 2);
+  const scored = KB.map(ch => {
+    let s = 0;
+    const hay = (ch.t + " " + ch.k).toLowerCase();
+    for (const w of words) if (hay.includes(w)) s += ch.t.toLowerCase().includes(w) ? 3 : 1;
+    return { ch, s };
+  }).sort((a,b) => b.s - a.s);
+  const best = scored[0];
+  if (!best || best.s === 0) {
+    return "<p>I couldn't find that in the SOPs built into this page. The golden rule from the CS Manual applies: <strong>if you don't know, ask</strong> (team lead / Founder), and never guess on a ticket.</p><p>For a deeper answer, ask Claude in the Serentia repo, it has the complete manuals.</p>";
+  }
+  let out = "<p><strong>" + best.ch.t + "</strong></p>" + best.ch.b + "<span class='src'>Source: " + best.ch.s + "</span>";
+  if (scored[1] && scored[1].s >= Math.max(2, best.s * 0.6)) {
+    out += "<p style='margin-top:10px'><strong>Also relevant: " + scored[1].ch.t + "</strong></p>" + scored[1].ch.b + "<span class='src'>Source: " + scored[1].ch.s + "</span>";
+  }
+  return out;
+}
+function renderChat() {
+  const log = store.get("chat", []);
+  $("#chatlog").innerHTML = log.map(m => '<div class="bubble '+(m.me?"me":"bot")+'">'+(m.me?esc(m.text):m.text)+'</div>').join("")
+    || '<div class="bubble bot">Hi Khethiwe. Ask me anything from the SOPs: refund amounts, SLAs, escalation rules, Zendrop contacts, chargeback evidence, the daily routine. Try one of the suggestions above.</div>';
+  $("#chatlog").scrollTop = $("#chatlog").scrollHeight;
+}
+function ask(q) {
+  if (!q.trim()) return;
+  const log = store.get("chat", []);
+  log.push({ me:true, text:q });
+  log.push({ me:false, text: askBot(q) });
+  store.set("chat", log.slice(-40)); renderChat();
+}
+$("#askGo").addEventListener("click", () => { ask($("#askIn").value); $("#askIn").value = ""; });
+$("#askIn").addEventListener("keydown", e => { if (e.key === "Enter") { ask($("#askIn").value); $("#askIn").value = ""; } });
+$("#askClear").addEventListener("click", () => { store.del("chat"); renderChat(); });
+(function suggest(){
+  const qs = ["Refund for shade mismatch on a VIP?", "What are the SLA times?", "Customer says delivered but not received", "When do I escalate to the Founder?", "Chargeback evidence for INR", "What's the 2% rule?"];
+  $("#askSuggest").innerHTML = qs.map(q => '<button class="ghost" data-q="'+esc(q)+'">'+esc(q)+'</button>').join("");
+  $$("#askSuggest [data-q]").forEach(b => b.addEventListener("click", () => ask(b.dataset.q)));
+})();
+
+/* ================= KPIs + REAMAZE ================= */
+const KPIS = [
+  { id:"frt", label:"First response time", unit:"h", target:"target 6h or less", src:"Re:amaze", eval:v => v<=6?"good":v<=8?"warning":"critical" },
+  { id:"sla", label:"SLA compliance", unit:"%", target:"target 95% or more", src:"Re:amaze", eval:v => v>=95?"good":v>=90?"warning":"critical" },
+  { id:"fcr", label:"First contact resolution", unit:"%", target:"target 60% or more", src:"Re:amaze", eval:v => v>=60?"good":v>=50?"warning":"critical" },
+  { id:"csat", label:"CSAT / Trustpilot", unit:"/5", target:"target 4.5 or more", src:"Trustpilot", eval:v => v>=4.5?"good":v>=4?"warning":"critical" },
+  { id:"esc", label:"Escalation rate", unit:"%", target:"target 15% or less", src:"Re:amaze + ClickUp", eval:v => v<=15?"good":v<=20?"warning":"critical" },
+  { id:"backlog", label:"Open tickets (unresolved)", unit:"", target:"zero older than 24h at day end", src:"Re:amaze", eval:v => v===0?"good":v<=5?"warning":"critical" },
+  { id:"refund", label:"Refunds + replacements", unit:"% of revenue", target:"KPI under 2%, Founder sees trend early", src:"Refund log", eval:v => v<1.5?"good":v<2?"warning":"critical" },
+  { id:"proc", label:"Avg processing time", unit:"h", target:"KPI 24h or less to hand-off", src:"Zendrop", eval:v => v<=24?"good":v<=48?"warning":"critical" }
+];
+const STATUS_TXT = { good:"On standard", warning:"Watch: flag early", critical:"Breach: act now", na:"no data yet" };
+function renderKpis() {
+  const vals = store.get("kpis", {});
+  $("#kpiGrid").innerHTML = KPIS.map(k => {
+    const v = vals[k.id], has = v !== undefined && v !== null && v !== "";
+    const st = has ? k.eval(parseFloat(v)) : "na";
+    return '<div class="tile"><div class="label">'+k.label+' <span class="ref">· '+k.src+'</span></div>'
+      + '<div class="value">'+(has?parseFloat(v):"–")+'<span class="unit"> '+k.unit+'</span></div>'
+      + '<div class="target">'+k.target+'</div>'
+      + '<div class="status '+st+'">'+STATUS_TXT[st]+'</div>'
+      + '<input type="number" step="any" inputmode="decimal" placeholder="enter current value" value="'+(has?v:"")+'" data-id="'+k.id+'"></div>';
+  }).join("");
+  $$("#kpiGrid input").forEach(inp => inp.addEventListener("change", () => {
+    const vals = store.get("kpis", {});
+    vals[inp.dataset.id] = inp.value === "" ? undefined : parseFloat(inp.value);
+    store.set("kpis", vals); renderKpis();
+  }));
+}
+function initRz(){
+  const rz = store.get("reamaze", null);
+  if (rz) { $("#rzBrand").value = rz.brand||""; $("#rzEmail").value = rz.email||""; $("#rzToken").value = rz.token||""; }
+  const last = store.get("rzLast", null);
+  if (last) $("#rzStatus").textContent = "Last sync: " + last.when + " · " + last.note;
+}
+$("#rzForget").addEventListener("click", () => {
+  store.del("reamaze"); $("#rzBrand").value = $("#rzEmail").value = $("#rzToken").value = "";
+  $("#rzStatus").textContent = "Credentials removed from this browser.";
+});
+async function rzApi(rz, path) {
+  const local = /^https?:$/.test(location.protocol) && /localhost|127\.0\.0\.1/.test(location.hostname);
+  const url = local ? "/api/reamaze/" + path : "https://" + rz.brand + ".reamaze.com/api/v1/" + path;
+  const res = await fetch(url, { headers: {
+    "Accept": "application/json",
+    "Authorization": "Basic " + btoa(rz.email + ":" + rz.token),
+    ...(local ? { "X-Reamaze-Brand": rz.brand } : {})
+  }});
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+$("#rzSync").addEventListener("click", async () => {
+  const rz = { brand: $("#rzBrand").value.trim().replace(/\..*$/, ""), email: $("#rzEmail").value.trim(), token: $("#rzToken").value.trim() };
+  if (!rz.brand || !rz.email || !rz.token) { $("#rzStatus").textContent = "Fill in brand, email and API token first."; return; }
+  store.set("reamaze", rz);
+  $("#rzStatus").textContent = "Syncing...";
+  const updated = [];
+  try {
+    try {
+      const conv = await rzApi(rz, "conversations?filter=unresolved");
+      const count = (conv && (conv.total_count ?? (conv.conversations||[]).length));
+      if (typeof count === "number") {
+        const vals = store.get("kpis", {}); vals.backlog = count; store.set("kpis", vals);
+        updated.push("open tickets: " + count);
+      }
+    } catch(e) {}
+    try {
+      const end = todayISO();
+      const s = new Date(); s.setDate(s.getDate()-7);
+      const start = s.getFullYear()+"-"+String(s.getMonth()+1).padStart(2,"0")+"-"+String(s.getDate()).padStart(2,"0");
+      const rt = await rzApi(rz, "reports/response_time?start_date="+start+"&end_date="+end);
+      const rep = rt && (rt.report || rt);
+      let secs = null;
+      if (rep) {
+        if (typeof rep.summary === "number") secs = rep.summary;
+        else if (rep.averages && typeof rep.averages === "object") {
+          const nums = Object.values(rep.averages).filter(x => typeof x === "number");
+          if (nums.length) secs = nums.reduce((a,b)=>a+b,0)/nums.length;
+        }
+      }
+      if (secs !== null) {
+        const vals = store.get("kpis", {}); vals.frt = Math.round(secs/360)/10; store.set("kpis", vals);
+        updated.push("avg response time (7d): " + (Math.round(secs/360)/10) + "h");
+      }
+    } catch(e) {}
+    if (updated.length) {
+      const note = "updated " + updated.join(", ") + ". FCR/SLA/escalations still come from Re:amaze Reports manually.";
+      store.set("rzLast", { when: new Date().toLocaleString(), note });
+      $("#rzStatus").textContent = "Synced. " + note;
+      renderKpis();
+    } else {
+      $("#rzStatus").textContent = "Connected but no numbers came back. Check the token's permissions, or sync via the local connector (node dashboard/server.js).";
+    }
+  } catch(err) {
+    $("#rzStatus").textContent = "Could not reach Re:amaze from this page (browsers block cross-site API calls here). Two options: run the local connector (node dashboard/server.js, then open http://localhost:8787), or paste your token to Claude in a session and ask it to sync.";
+  }
+});
+
+/* ================= GUIDE ================= */
+const GUIDE = [
+  ["Escalate immediately - no exceptions", "<p>These NEVER get auto-resolved or handled solo by CS/AI:</p><p><strong class='hot'>Chargeback mention</strong> · <strong class='hot'>legal/media threat</strong> · <strong class='hot'>severe skin reaction (medical treatment)</strong>: to OM immediately. Acknowledge only: <em>\"I've noted your concern and have escalated this to our management team.\"</em> No promises, admissions, or concessions.</p><p>Also to OM: any refund (any value) · 3rd ticket same issue · fraud suspicion (flag only). To Team Lead: VIP unresolved 30 min · delivery dispute without valid POD · any ticket approaching SLA.</p><p>AI Agent scope-outs the OM handles manually: refunds, replacements, skin reactions, undelivered orders, cancellations, chargebacks, legal threats.</p>"],
+  ["Refund decision matrix", "<div class='tablewrap'><table><tr><th>Issue</th><th>First-time</th><th>Repeat (2+)</th><th>VIP (2+/$100+)</th></tr><tr><td>Not received, no POD</td><td colspan='3'>Full refund or reship (confirm with fulfillment first)</td></tr><tr><td>Not received, POD confirmed</td><td>Direct to courier</td><td>$15 goodwill credit</td><td>50% refund or reship</td></tr><tr><td>Defect/damage (our fault)</td><td colspan='3'>Full refund, no return, document it</td></tr><tr><td>Shade mismatch</td><td>PMP first; 50% if declined</td><td>PMP or 50%</td><td>PMP or 50%</td></tr><tr><td>Coverage/quality</td><td colspan='3'>50% (instructions first)</td></tr><tr><td>Scent preference</td><td colspan='3'>50% (subjective, explain why)</td></tr><tr><td>Change of mind (within 30d)</td><td>Exchange or 30% credit</td><td>Exchange or 30% credit</td><td>Exchange or 50% refund</td></tr><tr><td>Change of mind (after 30d)</td><td>No refund</td><td>20% goodwill credit</td><td>30% goodwill refund</td></tr><tr><td>Falsely fulfilled, cancel</td><td colspan='3'><strong>Full refund, no exceptions</strong></td></tr></table></div><p>No physical returns ever (don't advertise it). Deviations need OM approval. Escalate shade refunds above $60. Always explain the <em>why</em>. Log every refund.</p>"],
+  ["Perfect Match Promise + shade guide", "<p><strong>PMP</strong>: once-off free shade replacement, always offered before any refund for shade issues. Unsure of shade: ask for a natural-light photo, skin tone description, or foundation reference.</p><p>Very Fair = Ivory · Fair = Buff Beige · Medium = Warm Honey · Medium/Light Brown = Honey Almond · Light Brown/Brown = Caramel Glow · Brown/Dark Brown = Deep Mocha</p><p>Product facts: no SPF benefits · vegan and cruelty-free · all ingredients on the website · sweat-proof/water-resistant · designed with mature skin in mind.</p>"],
+  ["Delivery issues (B-flows)", "<p><strong>Delayed (B1):</strong> verify tracking FIRST. Within 5-10 business days: reassure + tracking link. Outside: proactive apology + ETA from fulfillment. Stuck 3+ days beyond ETA: investigate. Lost: reship or full refund, customer's choice.</p><p><strong>Delivered-not-received (B2):</strong> get POD + label from fulfillment; customer confirms/denies; accurate POD = no refund (direct to courier) · inaccurate/no POD = full reship or refund. Document everything, top chargeback source.</p><p><strong>Missing item (B3):</strong> verify claim vs order; 5-day reporting window; shipping label confirms packed contents; confirmed missing = free replacement.</p><p><strong>Returned to warehouse (B4):</strong> notify customer immediately. Our address handling = free reship. Customer's address error = $15 credit (OM approval). No longer wants it = refund minus shipping.</p><p><strong>Falsely fulfilled (B5):</strong> apologise, get real dispatch status, revised ETA; cancellation request = full refund no exceptions; tag P2 + log.</p><p><strong>Customs (B6):</strong> explain, realistic ETA, check in every 1-3 days; over 20 business days = full refund goodwill (OM approval).</p>"],
+  ["Order management (C-flows)", "<p><strong>Cancellation (C1):</strong> check fulfillment status first. Pre-fulfillment = cancel + full refund (3-5 days). Shipped = can't cancel; invite to try; else escalate full refund excl. shipping.</p><p><strong>Shade change (C2):</strong> pre-fulfillment = update; shipped = PMP exchange on arrival. Never promise unconfirmed changes.</p><p><strong>Address change (C3):</strong> URGENT, respond ~30 min. Pre-fulfillment = update; shipped = impossible (B4 if it fails); customer's error = $15 credit w/ approval.</p>"],
+  ["Trustpilot in 30 seconds", "<p>Respond to everything awaiting reply. Empathy for the <em>experience</em>, never admit fault where policy was followed. Verify facts + account before replying; response must match real case status.</p><p>1 star: de-escalate + correct inaccuracies · 2: accountability · 3: thank + acknowledge gap · 4: appreciate + invite back · 5: personalise + strengthen loyalty.</p><p>Score under 3/5: personal follow-up within 24h. Reviewer found in Re:amaze: reach out proactively. Final check: does it make the reviewer feel heard AND raise a future customer's confidence?</p>"],
+  ["Chargebacks in 30 seconds", "<p>Check disputes daily. Submit within 24h of dispute, always before deadline. Same flow every time; only Step-5 evidence changes: <strong>INR</strong> = tracking/label/POD · <strong>SNAD</strong> = product page/marketing/photos/correspondence · <strong>Unauthorized</strong> = transaction + fulfillment + fraud indicators · <strong>Billing</strong> = payment records (duplicate = just refund it).</p><p>Cross-verify SKU/tracking/name/address everywhere. Escalate first: fulfillment errors, fraud, repeat chargebackers, high-value. Final check: \"Would an independent reviewer clearly understand why Serentia should win?\"</p>"],
+  ["Zendrop escalation tree", "<p>Within SLA = log + monitor. Isolated issue = Zendrop, update sheet. Pattern/repeat SKU = escalate + tag <strong>RISK SKU</strong>. No response 24h = escalate. Founder ONLY when: refunds trend to 2% · 15+ day delivery pattern · recurring damage · multiple SKUs.</p><p>Contacts: <strong>Sharmaine</strong> (daily ops/shipping/inventory) · <strong>Rachel</strong> (China/factories/pricing) · <strong>Roman</strong> (structural strategy). Invoices: forward to Founder, never approve yourself.</p><p>Founder messages = signal + data + recommendation: 1-2 lines of what's happening, orders/$ involved, what Zendrop did, what you recommend.</p>"],
+  ["Tone by situation", "<div class='tablewrap'><table><tr><th>Customer</th><th>Tone</th><th>Never</th></tr><tr><td>Angry</td><td>Emotion first, then solve. Warm, unhurried</td><td>Defensive; leading with policy; matching energy</td></tr><tr><td>Confused</td><td>Reassuring, step-by-step</td><td>Jargon; walls of text</td></tr><tr><td>Brief</td><td>Direct, complete, no fluff</td><td>Over-explaining</td></tr><tr><td>Happy</td><td>Warm, reciprocal</td><td>Generic replies</td></tr><tr><td>Threatening</td><td>Calm, neutral, escalate</td><td>Promises or admissions</td></tr></table></div><p>Golden rules: edit every macro · explain the why · solution first, policy second · if you don't know, ask.</p>"]
+];
+$("#panel-guide").innerHTML = GUIDE.map(([t, b]) =>
+  '<details class="acc"><summary>'+t+'</summary><div class="body">'+b+'</div></details>').join("") +
+  '<p class="metrics-note">Full detail: <code>knowledge-base/</code> in the Serentia repo. Ask Claude anything there and it answers from the SOPs, or use the Ask SOPs tab here.</p>';
+
+/* ================= TABS + CLOCK ================= */
+function switchTab(name) {
+  $$("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  $$("section.panel").forEach(p => p.classList.remove("active"));
+  $("#panel-"+name).classList.add("active");
+}
+$$("nav.tabs button").forEach(btn => btn.addEventListener("click", () => switchTab(btn.dataset.tab)));
+
+let lastDay = todayISO();
+setInterval(() => {
+  $("#clock").textContent = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  timerTick();
+  if (timer.running && !timer.paused) renderTimer();
+  renderWork();
+  if (todayISO() !== lastDay) { lastDay = todayISO(); timer.pomos = 0; saveTimer(); renderToday(); renderLedger(); }
+}, 1000);
+setInterval(renderLedger, 60000);
+
+$("#sync").addEventListener("click", () => {
+  if (window.supabase && window.supabase.createClient) openAuth();
+  else alert("Cloud sync runs from the hosted link, not the claude.ai preview. See dashboard/SETUP.md to set it up.");
+});
+
+boot();
+</script>
