@@ -97,6 +97,8 @@
   .edithead { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
   .edithead input { font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--baseline); background: var(--page); color: var(--ink-1); }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .scopetag { font-size: 12.5px; color: var(--ink-2); background: var(--grid); border-radius: 999px; padding: 4px 12px; width: 100%; }
+  .scopetag.today { color: var(--violet); background: var(--accent-soft); font-weight: 600; }
 
   /* todos */
   .todo-add { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -289,11 +291,7 @@
   </nav>
 
   <section class="panel active" id="panel-today">
-    <div class="toolbar">
-      <button class="ghost" id="editSched">Edit schedule</button>
-      <button class="ghost" id="addBlock" style="display:none">Add block</button>
-      <button class="ghost" id="resetSched" style="display:none">Reset to default</button>
-    </div>
+    <div class="toolbar" id="schedTools"></div>
     <div id="schedList"></div>
   </section>
 
@@ -643,22 +641,84 @@ const WEEKLY = {
   3: { id:"wk-wed", title:"Wednesday extras", items:[{id:"trend", t:"Fulfillment performance trend review (delays, cancellations, patterns by carrier/country/SKU)"}] },
   5: { id:"wk-fri", title:"Friday extras", items:[{id:"fcr", t:"Weekly FCR + Trustpilot review"},{id:"learn", t:"CS Learnings pattern review"},{id:"wsum", t:"Weekly summary to Founder: trends, risks, supplier performance"}] }
 };
-function getSchedule() { return store.get("schedule2", null) || JSON.parse(JSON.stringify(DEFAULT_SCHEDULE)); }
-function saveSchedule(s) { store.set("schedule2", s); }
+/* The recurring routine (applies every day) lives in "schedule2".
+   A one-off plan for a single date lives in "sched.<YYYY-MM-DD>" and, when
+   present, replaces the routine for that day only - other days are untouched. */
+function getTemplate() { return store.get("schedule2", null) || JSON.parse(JSON.stringify(DEFAULT_SCHEDULE)); }
+function saveTemplate(s) { store.set("schedule2", s); }
+function todaySchedKey() { return "sched." + todayISO(); }
+function getOverride() { return store.get(todaySchedKey(), null); }
+function saveOverride(s) { store.set(todaySchedKey(), s); }
+function clearOverride() { store.del(todaySchedKey()); }
+function buildRoutineBlocks() {
+  const d = new Date();
+  const blocks = getTemplate().map(b => ({...b, weekly:false}));
+  const wk = WEEKLY[d.getDay()];
+  if (wk) blocks.splice(blocks.length-1, 0, {...wk, time:"fit into ops blocks", ref:"Weekly rhythm", weekly:true});
+  if (d.getDate() === 1) blocks.splice(blocks.length-1, 0, { id:"wk-month", title:"1st of month", time:"", ref:"Monthly review", weekly:true,
+    items:[{id:"mrev", t:"Full CS performance review + scorecard averages"},{id:"mcogs", t:"COGs reconciliation, nothing older than one billing cycle"}]});
+  return blocks;
+}
+function effectiveBlocks() { const o = getOverride(); return o ? o.map(b => ({...b, weekly:false})) : buildRoutineBlocks(); }
 
 /* ================= TODAY TAB ================= */
-let editMode = false;
+let editMode = false, editScope = "all";   // editScope: "today" (one-off) or "all" (routine)
+function editRead() { return editScope === "today" ? (getOverride() || []) : getTemplate(); }
+function editWrite(s) { if (editScope === "today") saveOverride(s); else saveTemplate(s); }
+function renderSchedTools() {
+  const wrap = $("#schedTools"); if (!wrap) return;
+  const hasOv = !!getOverride();
+  let html = "";
+  if (editMode) {
+    html += '<span class="scopetag ' + (editScope === "today" ? "today" : "") + '">' +
+      (editScope === "today" ? "Editing today only - your routine and other days stay the same" : "Editing your routine - this applies every day") + '</span>';
+    html += '<button class="ghost" id="addBlock">Add block</button>';
+    html += '<button class="primary" id="doneEdit">Done</button>';
+    html += editScope === "all"
+      ? '<button class="danger" id="resetAll">Reset routine to SOP default</button>'
+      : '<button class="danger" id="resetToday">Discard today\'s plan</button>';
+  } else if (hasOv) {
+    html += '<span class="scopetag today">Today has a one-off plan - your routine and other days are unchanged.</span>';
+    html += '<button class="ghost" id="editToday">Edit today\'s plan</button>';
+    html += '<button class="ghost" id="editAll">Edit routine (all days)</button>';
+    html += '<button class="danger" id="resetToday">Reset today to routine</button>';
+  } else {
+    html += '<button class="ghost" id="editToday">Change today only</button>';
+    html += '<button class="ghost" id="editAll">Edit routine (all days)</button>';
+  }
+  wrap.innerHTML = html;
+  const on = (id, fn) => { const el = $("#"+id); if (el) el.onclick = fn; };
+  on("editToday", () => {
+    if (!getOverride()) {   // start today's one-off from a copy of today's actual plan
+      const snap = buildRoutineBlocks().map(x => { const c = JSON.parse(JSON.stringify(x)); delete c.weekly; return c; });
+      saveOverride(snap);
+    }
+    editScope = "today"; editMode = true; renderToday();
+  });
+  on("editAll", () => { editScope = "all"; editMode = true; renderToday(); });
+  on("doneEdit", () => { editMode = false; renderToday(); });
+  on("addBlock", () => {
+    const s = editRead();
+    s.push({ id:"b"+Date.now(), time:"17:00-17:30", title:"New block", ref:"", items:[{id:"u"+Date.now(), t:"New item"}] });
+    editWrite(s); renderToday();
+  });
+  on("resetAll", () => { if (confirm("Reset your recurring routine to the SOP default? Your routine edits will be lost. (Today's one-off plans are not affected.)")) { store.del("schedule2"); renderToday(); } });
+  on("resetToday", () => {
+    if (!confirm("Remove today's custom plan and use your normal routine for today?")) return;
+    clearOverride(); if (editMode && editScope === "today") { editMode = false; editScope = "all"; } renderToday();
+  });
+}
 function renderToday() {
   const d = new Date();
   $("#dateline").textContent = d.toLocaleDateString(undefined, { weekday:"long", day:"numeric", month:"long", year:"numeric" });
   const key = "check."+todayISO();
   const state = store.get(key, {});
-  const sched = getSchedule();
-  const blocks = sched.map(b => ({...b, weekly:false}));
-  const wk = WEEKLY[d.getDay()];
-  if (wk) blocks.splice(blocks.length-1, 0, {...wk, time:"fit into ops blocks", ref:"Weekly rhythm", weekly:true});
-  if (d.getDate() === 1) blocks.splice(blocks.length-1, 0, { id:"wk-month", title:"1st of month", time:"", ref:"Monthly review", weekly:true,
-    items:[{id:"mrev", t:"Full CS performance review + scorecard averages"},{id:"mcogs", t:"COGs reconciliation, nothing older than one billing cycle"}]});
+  renderSchedTools();
+  const ov = getOverride();
+  let blocks;
+  if (editMode && editScope === "all") blocks = buildRoutineBlocks();
+  else if (ov) blocks = ov.map(b => ({...b, weekly:false}));
+  else blocks = buildRoutineBlocks();
 
   $("#schedList").innerHTML = blocks.map((b, bi) => {
     const editable = editMode && !b.weekly;
@@ -684,26 +744,26 @@ function renderToday() {
     }));
   } else {
     $$("#schedList [data-eb]").forEach(inp => inp.addEventListener("change", () => {
-      const s = getSchedule(); const b = s.find(x => x.id === inp.dataset.eb);
-      if (b) { b[inp.dataset.f] = inp.value; saveSchedule(s); }
+      const s = editRead(); const b = s.find(x => x.id === inp.dataset.eb);
+      if (b) { b[inp.dataset.f] = inp.value; editWrite(s); }
     }));
     $$("#schedList [data-ei]").forEach(inp => inp.addEventListener("change", () => {
-      const s = getSchedule(); const b = s.find(x => x.id === inp.dataset.ei);
+      const s = editRead(); const b = s.find(x => x.id === inp.dataset.ei);
       const it = b && b.items.find(x => x.id === inp.dataset.item);
-      if (it) { it.t = inp.value; saveSchedule(s); }
+      if (it) { it.t = inp.value; editWrite(s); }
     }));
     $$("#schedList [data-delitem]").forEach(btn => btn.addEventListener("click", () => {
       const [bid, iid] = btn.dataset.delitem.split(".");
-      const s = getSchedule(); const b = s.find(x => x.id === bid);
-      if (b) { b.items = b.items.filter(x => x.id !== iid); saveSchedule(s); renderToday(); }
+      const s = editRead(); const b = s.find(x => x.id === bid);
+      if (b) { b.items = b.items.filter(x => x.id !== iid); editWrite(s); renderToday(); }
     }));
     $$("#schedList [data-additem]").forEach(btn => btn.addEventListener("click", () => {
-      const s = getSchedule(); const b = s.find(x => x.id === btn.dataset.additem);
-      if (b) { b.items.push({id:"u"+Date.now(), t:"New item"}); saveSchedule(s); renderToday(); }
+      const s = editRead(); const b = s.find(x => x.id === btn.dataset.additem);
+      if (b) { b.items.push({id:"u"+Date.now(), t:"New item"}); editWrite(s); renderToday(); }
     }));
     $$("#schedList [data-delblock]").forEach(btn => btn.addEventListener("click", () => {
       if (!confirm("Delete this whole block?")) return;
-      saveSchedule(getSchedule().filter(x => x.id !== btn.dataset.delblock)); renderToday();
+      editWrite(editRead().filter(x => x.id !== btn.dataset.delblock)); renderToday();
     }));
   }
   updateHero();
@@ -715,23 +775,10 @@ function updateHero() {
   const pct = total ? Math.round(done/total*100) : 0;
   $("#heroPct").textContent = pct + "%";
   $("#heroFill").style.width = pct + "%";
-  $("#heroCount").textContent = editMode ? "editing schedule" : done+" of "+total+" steps ticked · resets each day";
+  $("#heroCount").textContent = editMode
+    ? (editScope === "today" ? "editing today only" : "editing your routine")
+    : (getOverride() ? done+" of "+total+" · today's one-off plan" : done+" of "+total+" steps ticked · resets each day");
 }
-$("#editSched").addEventListener("click", () => {
-  editMode = !editMode;
-  $("#editSched").textContent = editMode ? "Done editing" : "Edit schedule";
-  $("#addBlock").style.display = editMode ? "" : "none";
-  $("#resetSched").style.display = editMode ? "" : "none";
-  renderToday();
-});
-$("#addBlock").addEventListener("click", () => {
-  const s = getSchedule();
-  s.push({ id:"b"+Date.now(), time:"17:00-17:30", title:"New block", ref:"", items:[{id:"u"+Date.now(), t:"New item"}] });
-  saveSchedule(s); renderToday();
-});
-$("#resetSched").addEventListener("click", () => {
-  if (confirm("Reset the schedule to the SOP default? Your edits will be lost.")) { store.del("schedule2"); renderToday(); }
-});
 
 /* ================= TIME TRACKING (check in / lunch / out) ================= */
 function dayData() { return store.get("day."+todayISO(), { events:[], logs:[], notes:{} }); }
@@ -846,7 +893,7 @@ function fillFocusLabels() {
   const sel = $("#focusLabel"); if (!sel) return;
   const cur = sel.value;
   const opts = ['<option value="">Pick what you are working on</option>'];
-  for (const b of getSchedule()) opts.push('<option value="'+esc(b.title)+'">'+esc(b.time+" · "+b.title)+'</option>');
+  for (const b of effectiveBlocks()) opts.push('<option value="'+esc(b.title)+'">'+esc(b.time+" · "+b.title)+'</option>');
   for (const t of store.get("todos", []).filter(t => !t.done).slice(0, 10)) opts.push('<option value="'+esc(t.text)+'">To-do: '+esc(t.text)+'</option>');
   opts.push('<option value="__custom">Custom task...</option>');
   sel.innerHTML = opts.join("");
