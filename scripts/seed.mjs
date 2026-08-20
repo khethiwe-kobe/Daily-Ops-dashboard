@@ -4,8 +4,8 @@ import fs from 'fs'
 import path from 'path'
 import { Pool } from 'pg'
 
-const URL_ = process.env.POSTGRES_URL
-if (!URL_) { console.error('FATAL: set POSTGRES_URL'); process.exit(2) }
+const URL_ = process.env.POSTGRES_URL || process.env.DATABASE_URL
+if (!URL_) { console.error('FATAL: set POSTGRES_URL or DATABASE_URL'); process.exit(2) }
 
 const file = path.join(process.cwd(), 'data', 'seed-status.json')
 const { statuses = {}, notes = {}, threads = {}, updated = {} } = JSON.parse(fs.readFileSync(file, 'utf8'))
