@@ -2,10 +2,16 @@
 // Idempotent: re-running will not duplicate thread messages.
 import fs from 'fs'
 import path from 'path'
-import { Pool } from 'pg'
+// pg is CommonJS: a named import works under a bundler but throws in plain
+// node ESM, which is how this script actually runs.
+import pg from 'pg'
+const { Pool } = pg
 
-const URL_ = process.env.POSTGRES_URL || process.env.DATABASE_URL
-if (!URL_) { console.error('FATAL: set POSTGRES_URL or DATABASE_URL'); process.exit(2) }
+const CANDIDATES = ['POSTGRES_URL', 'DATABASE_URL', 'POSTGRES_DATABASE_URL', 'POSTGRES_POSTGRES_URL', 'POSTGRES_PRISMA_URL']
+const URL_ = CANDIDATES.map((k) => process.env[k]).find((v) => v && /^postgres(ql)?:\/\//.test(v)) ||
+  Object.entries(process.env).filter(([k, v]) => /_URL$/.test(k) && /^postgres(ql)?:\/\//.test(String(v)))
+    .sort((a, b) => (/UNPOOLED/i.test(a[0]) ? 1 : 0) - (/UNPOOLED/i.test(b[0]) ? 1 : 0)).map(([, v]) => v)[0]
+if (!URL_) { console.error('FATAL: no Postgres connection string in the environment (tried ' + CANDIDATES.join(', ') + ')'); process.exit(2) }
 
 const file = path.join(process.cwd(), 'data', 'seed-status.json')
 const { statuses = {}, notes = {}, threads = {}, updated = {} } = JSON.parse(fs.readFileSync(file, 'utf8'))

@@ -1,4 +1,4 @@
-import { q, ensureSchema } from '../../../lib/db'
+import { q, ensureSchema, resolveConnection } from '../../../lib/db'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -9,7 +9,7 @@ export async function GET() {
   const out = {
     ok: true,
     db: 'unknown',
-    urlVar: process.env.POSTGRES_URL ? 'POSTGRES_URL' : process.env.DATABASE_URL ? 'DATABASE_URL' : 'none',
+    urlVar: resolveConnection().name || 'none',
     syncKey: process.env.SYNC_KEY ? 'set' : 'MISSING',
     statuses: null,
     threads: null,
