@@ -1,0 +1,1094 @@
+<!doctype html>
+<html lang="en">
+<head><script>window.__hfAuthOrigin="https://auth.higgsfield.app";/**
+ * Approval client SDK — the browser half of the approval flow (paired with
+ * approve.html), injected into every app page. A real file, imported as text and
+ * bundled at deploy (see injected-sdk.ts + the router wrangler). Runs in the
+ * untrusted app page: plain ES5, idempotent (window.__hfPatched), fully
+ * try/catch-wrapped, installed inline+synchronous at <head> so it's present
+ * before any app code runs.
+ *
+ * There is exactly ONE approval trigger: window.hf.requestGeneration(model,
+ * params, opts). The app calls it on the user's Generate action; the modal is
+ * visible exactly while the returned promise is pending. Approve resolves the
+ * minted single-use intent id, which the app threads to its server function and
+ * the fnf SDK adapter sends as the submit body's confirmation_token; cancel
+ * rejects with a DOMException named AbortError (a user choice, not a failure).
+ * Enforcement is entirely server-side: the outbound spend gate 403s any
+ * POST /jobs/submit that doesn't carry a matching minted approval (see
+ * outbound-worker/src/spend-gate.ts), so an app that skips the call gets a
+ * self-describing failed submit, never a silent spend. This SDK never inspects
+ * request bodies and never opens a modal on its own.
+ */
+(function () {
+  try {
+    if (window.__hfPatched) return;
+    window.__hfPatched = true;
+    var of = window.fetch;
+    if (typeof of !== "function") return;
+    // Approval surface origin (auth.<zone>, serving the consent page at
+    // /approve). Preferred source: the origin the router stamps ahead of this
+    // script (injected-sdk.ts) — apps can be served on CUSTOM DOMAINS, where
+    // deriving from the page host would fabricate a non-existent
+    // auth.<customdomain>. Host derivation stays as the fallback for stale
+    // cached HTML that predates the stamp.
+    var APPROVE =
+      typeof window.__hfAuthOrigin === "string" && window.__hfAuthOrigin.indexOf("https://") === 0
+        ? window.__hfAuthOrigin
+        : "https://auth." + location.host.split(".").slice(1).join(".");
+    window.__hfFetches = window.__hfFetches || [];
+
+    // Single-flight: at most ONE approval modal at a time. A fast double-click (or
+    // an app firing two requests) would otherwise open a second scrim+iframe stacked
+    // on the first — so a second approve() while one is open returns the in-flight
+    // promise instead of opening another modal.
+    var openModal = null;
+
+    // The modal is a cross-origin iframe of auth.<zone>/approve: the app cannot
+    // read or script it, and WHO may frame the page is pinned server-side by its
+    // frame-ancestors. The page itself obtains the authoritative price from fnf
+    // before enabling Generate; app-supplied display prices are intentionally
+    // ignored. (The app DOM could still overlay the iframe — the spend gate's
+    // server-side job binding is what makes a spoofed click worthless.)
+    function approve(job) {
+      if (openModal) return openModal;
+      openModal = new Promise(function (resolve, reject) {
+        var grant = null;
+        var ready = false;
+        var done = false;
+        var openedAt = Date.now();
+
+        // Three parent layers so the iframe body can stay fully TRANSPARENT and
+        // still show no white edge:
+        //  - scrim: full-screen div carrying the blur (backdrop-filter samples the
+        //    real app behind it) + a dark tint.
+        //  - wrap: a rounded, overflow:hidden div that CLIPS the iframe. The iframe
+        //    overlaps the backdrop-filter scrim, so Chromium backs its layer
+        //    opaquely; the iframe's OWN border-radius doesn't reliably clip that
+        //    layer (leaving white corners), but a parent clip does. So the corners
+        //    outside the radius are clipped away → the blurred scrim shows through,
+        //    no white ring.
+        //  - frame: the iframe, fully transparent, filling wrap. Its page paints
+        //    only the card (edge-to-edge, no radius — wrap provides the rounding).
+        var scrim = document.createElement("div");
+        scrim.style.cssText =
+          "position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,0.28);" +
+          "-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)";
+        var wrap = document.createElement("div");
+        // opacity:0 until the page reports its height so the modal fades in at its
+        // final size (no empty-frame flash, no height re-center / layout shift).
+        // Round with clip-path (not just border-radius + overflow): clip-path is
+        // applied in the COMPOSITOR, so it clips the cross-origin iframe's own
+        // layer edge cleanly. border-radius/overflow only clip the shape and leave
+        // the iframe's opaque WHITE base fringing at the rounded corners (the white
+        // peek). background = card color as a second line of defense. Both the wrap
+        // and the iframe carry the clip; keep 24px in sync with the card radius.
+        wrap.style.cssText =
+          "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);" +
+          "width:min(400px,calc(100vw - 32px));height:188px;border-radius:24px;overflow:hidden;" +
+          "-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px);" +
+          "background:#23262a;opacity:0;transition:opacity 0.12s ease;z-index:2147483647";
+        var frame = document.createElement("iframe");
+        // referrerPolicy="origin": the page's frame-ancestors admits a registered
+        // CUSTOM DOMAIN only when this origin arrives as the Referer (approve.ts).
+        frame.referrerPolicy = "origin";
+        frame.src = APPROVE + "/approve";
+        frame.allowTransparency = "true";
+        frame.style.cssText =
+          "display:block;width:100%;height:100%;border:0;border-radius:24px;" +
+          "-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px);background:#23262a";
+        wrap.appendChild(frame);
+        var revealTimer = null;
+
+        function cleanup() {
+          if (done) return;
+          done = true;
+          clearTimeout(revealTimer);
+          window.removeEventListener("message", onMessage);
+          document.removeEventListener("keydown", onKey, true);
+          wrap.remove();
+          scrim.remove();
+        }
+
+        function beacon(outcome) {
+          if (!grant) return;
+          try {
+            var payload = JSON.stringify({
+              grant: grant,
+              outcome: outcome,
+              ms_open: Date.now() - openedAt,
+            });
+            var url = APPROVE + "/approve/outcome";
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon(url, new Blob([payload], { type: "text/plain" }));
+            } else {
+              of(url, { method: "POST", body: payload, mode: "no-cors", keepalive: true }).catch(
+                function () {},
+              );
+            }
+          } catch (e) {}
+        }
+
+        // Dismiss = the same "denied" path as the modal's Cancel button, so the
+        // caller turns it into an AbortError (a cancel, not a failure).
+        function dismiss() {
+          if (done) return;
+          cleanup();
+          beacon("denied");
+          var error = new Error("hf: denied");
+          error.hfReason = "denied";
+          reject(error);
+        }
+
+        function onKey(event) {
+          if (event.key === "Escape" || event.keyCode === 27) dismiss();
+        }
+
+        function sendRequest() {
+          if (!ready || !grant || done) return;
+          frame.contentWindow.postMessage(
+            { source: "hf-approve", type: "request", grant: grant, job: job },
+            APPROVE,
+          );
+        }
+
+        function onMessage(event) {
+          if (event.origin !== APPROVE || event.source !== frame.contentWindow) return;
+          var data = event.data || {};
+          if (data.source !== "hf-approve") return;
+          // Size the clip wrapper to the page's reported card height, and reveal
+          // ONLY once sized — modal fades in at its final height (no shift/flash).
+          if (typeof data.h === "number" && data.h > 0) {
+            wrap.style.height = data.h + "px";
+            clearTimeout(revealTimer);
+            wrap.style.opacity = "1";
+          }
+          if (data.type === "ready") {
+            ready = true;
+            sendRequest();
+            return;
+          }
+          if (data.type !== "result") return;
+          cleanup();
+          if (data.ok && typeof data.intentId === "string") {
+            resolve(data.intentId);
+            return;
+          }
+          beacon("denied");
+          var error = new Error("hf: " + (data.reason || "denied"));
+          error.hfReason = data.reason || "denied";
+          reject(error);
+        }
+
+        window.addEventListener("message", onMessage);
+        // Close on background (scrim) click and on Escape. The scrim sits behind
+        // the card (wrap), so a click on it is a click OUTSIDE the modal. Escape
+        // is captured on the parent; the page also handles Escape when focus is
+        // inside the iframe (see approve-ui).
+        scrim.addEventListener("click", dismiss);
+        document.addEventListener("keydown", onKey, true);
+        document.documentElement.appendChild(scrim);
+        document.documentElement.appendChild(wrap);
+        // Fallback: reveal at the default height if the page never reports its
+        // size, so the modal is never stuck hidden.
+        revealTimer = setTimeout(function () {
+          wrap.style.opacity = "1";
+        }, 500);
+
+        of("/__auth/approval-grant", { method: "POST" })
+          .then(function (r) {
+            return r
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (b) {
+                return { s: r.status, b: b };
+              });
+          })
+          .then(function (x) {
+            if (!x.b || !x.b.grant) {
+              cleanup();
+              reject(
+                new Error(
+                  x.s === 401 ? "hf: not signed in" : "hf: approval unavailable (" + x.s + ")",
+                ),
+              );
+              return;
+            }
+            grant = x.b.grant;
+            sendRequest();
+          })
+          .catch(function (error) {
+            cleanup();
+            reject(error);
+          });
+
+        setTimeout(function () {
+          if (!done) {
+            cleanup();
+            beacon("timeout");
+            reject(new Error("hf: approval timeout"));
+          }
+        }, 120000);
+      });
+      // Release the single-flight lock once this approval settles, so the next
+      // genuine generation can open a fresh modal.
+      var release = function () {
+        openModal = null;
+      };
+      openModal.then(release, release);
+      return openModal;
+    }
+
+    // Observability-only fetch patch: request log for debugging (__hfFetches +
+    // console). No interception, no body inspection, no classification — the
+    // approval flow is driven solely by window.hf.requestGeneration.
+    window.fetch = function (input, init) {
+      try {
+        var url = typeof input === "string" ? input : (input && input.url) || String(input);
+        var method = (init && init.method) || (input && input.method) || "GET";
+        window.__hfFetches.push({ url: url, method: method, ts: Date.now() });
+        console.log("[hf-fetch]", method, url);
+      } catch (e) {}
+      return of.apply(this, arguments);
+    };
+
+    // Public SDK. The app contract (see the builder instructions and
+    // docs/generation-approval): call this on the Generate action with the SDK
+    // WIRE shape of the exact submission (wire.jobSetType + wire.params — the
+    // approval is bound server-side to the hash of {job_set_type, params} of the
+    // actual submit body), thread the resolved intent id to the server as the
+    // confirmation token, and render a cancel quietly. opts.credits is an
+    // optional display-only estimate shown in the modal. The id is a token:
+    // never logged here, and apps must not log it either.
+    window.hf = {
+      requestGeneration: function (model, params, opts) {
+        // Fail fast on a bad job identity, BEFORE any UI. The approve page
+        // (protocol.ts) silently ignores a request whose job_set_type isn't a
+        // non-empty string or whose params don't survive structured clone —
+        // which would leave the modal stuck on "Waiting for the app…" with no
+        // way to reply. A typed rejection shows the app its own bug instead.
+        if (typeof model !== "string" || !model) {
+          return Promise.reject(
+            new TypeError("hf: requestGeneration(model, params) — model must be a non-empty string"),
+          );
+        }
+        if (typeof structuredClone === "function") {
+          try {
+            structuredClone(params);
+          } catch (e) {
+            return Promise.reject(
+              new TypeError("hf: requestGeneration params must be structured-cloneable (plain JSON)"),
+            );
+          }
+        }
+        return approve({ job_set_type: model, params: params }).then(
+          function (id) {
+            console.log("[hf] approved");
+            return id;
+          },
+          // Cancel → AbortError, per the app contract ("render a quiet cancelled
+          // state"). Other failures (not signed in, unavailable, timeout) bubble
+          // as-is — those ARE failures.
+          function (e) {
+            if (e && e.hfReason === "denied") {
+              console.log("[hf] cancelled");
+              throw new DOMException("Generation cancelled", "AbortError");
+            }
+            throw e;
+          },
+        );
+      },
+    };
+  } catch (e) {}
+})();
+</script>
+<meta charset="utf-8">
+<title>Serentia Ops — Support command centre</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.svg">
+<style>
+  :root{
+    /* Theme drawn from the Serentia Ops cover: warm cream ground, floating
+       pastel tiles (plum / amber / blue / sage), serif display, soft shadows */
+    --page:#EAE5DC; --card:#F4F1EA; --card-2:#FBF9F5;
+    --ink:#3A2F38; --ink-2:#6E6168; --muted:#988C93; --line:#E3DCD2;
+    --plum:#8C5A78; --plum-deep:#6E4560; --plum-soft:#EFE3EB;
+    --amber:#E3A455; --amber-deep:#B07B2C; --amber-soft:#F8ECDA;
+    --blue:#86A9DC;  --blue-deep:#4C6FA5;  --blue-soft:#E7EEF8;
+    --sage:#9CBEA4;  --sage-deep:#5B7A6B;  --sage-soft:#E9F0EA;
+    --red:#C4544E;   --red-soft:#F7E4E2;
+    --shadow:0 2px 6px rgba(58,47,56,.06), 0 14px 34px rgba(58,47,56,.10);
+    --shadow-sm:0 1px 3px rgba(58,47,56,.08);
+    --r:22px;
+    --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:26px 18px 90px}
+
+  /* Hero card — mirrors the cover art */
+  .hero{background:var(--card);border-radius:28px;box-shadow:var(--shadow);
+    padding:34px 34px 30px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;position:relative;overflow:hidden}
+  .hero h1{font-family:var(--serif);font-weight:600;font-size:40px;color:var(--plum-deep);margin:0;letter-spacing:.01em}
+  .hero .sub{color:var(--ink-2);font-size:15px;margin-top:4px}
+  .hero .left{flex:1 1 300px;min-width:260px}
+  .tiles{display:grid;grid-template-columns:repeat(3,54px);grid-auto-rows:54px;gap:10px;transform:rotate(-2deg)}
+  .tile{border-radius:14px;box-shadow:var(--shadow-sm);display:grid;place-items:center;font-size:19px;color:#fff}
+  .t-plum{background:var(--plum)} .t-amber{background:var(--amber)} .t-blue{background:var(--blue)}
+  .t-sage{background:var(--sage)} .t-deep{background:var(--plum-deep)}
+  .statusline{margin-top:14px;font-size:12.5px;color:var(--muted)}
+  .statusline b{color:var(--sage-deep)}
+
+  /* KPI tiles */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0 8px}
+  .kpi{border-radius:var(--r);padding:16px 18px;box-shadow:var(--shadow-sm);color:#fff}
+  .kpi .v{font-size:28px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:12px;margin-top:6px;opacity:.92}
+  .k-plum{background:var(--plum)} .k-amber{background:var(--amber)}
+  .k-blue{background:var(--blue)} .k-sage{background:var(--sage)}
+
+  /* Controls */
+  .controls{display:flex;gap:10px;align-items:center;margin:16px 0 8px;flex-wrap:wrap}
+  .search{flex:1 1 240px;min-width:200px;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:10px 14px;font:inherit;color:var(--ink);box-shadow:var(--shadow-sm)}
+  .search:focus{outline:2px solid var(--plum);border-color:transparent}
+  .btn{font:inherit;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line);
+    border-radius:14px;padding:10px 14px;background:var(--card);color:var(--plum-deep);box-shadow:var(--shadow-sm)}
+  .btn:hover{background:var(--plum-soft)}
+  .btn:focus-visible{outline:2px solid var(--ink)}
+  .filters{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 2px}
+  .chip{font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;border:1px solid var(--line);
+    border-radius:999px;padding:7px 13px;background:var(--card);color:var(--ink-2);box-shadow:var(--shadow-sm)}
+  .chip[aria-pressed="true"]{background:var(--plum);border-color:var(--plum);color:#fff}
+  .chip .n{opacity:.75;font-weight:700;margin-left:4px;font-variant-numeric:tabular-nums}
+  .sortsel{font:inherit;font-size:13px;font-weight:600;color:var(--plum-deep);background:var(--card);
+    border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:var(--shadow-sm);cursor:pointer}
+  .sortsel:focus{outline:2px solid var(--plum)}
+  .age{flex:0 0 auto;font-size:11px;font-weight:700;padding:5px 9px;border-radius:999px;white-space:nowrap;
+    font-variant-numeric:tabular-nums;letter-spacing:.01em}
+  .age.breach{background:var(--red-soft);color:var(--red)}
+  .age.soon{background:var(--amber-soft);color:var(--amber-deep)}
+  .age.ok{background:var(--sage-soft);color:var(--sage-deep)}
+  .age.none{background:var(--card-2);color:var(--muted)}
+  .sla-legend{display:flex;gap:14px;flex-wrap:wrap;margin:8px 2px 0;font-size:12px;color:var(--ink-2)}
+  .sla-legend .k{display:inline-flex;align-items:center;gap:6px}
+  .sla-legend .d{width:10px;height:10px;border-radius:999px}
+
+  /* Sign-in card */
+  .gate{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:26px;margin-top:16px;max-width:520px}
+  .gate h2{font-family:var(--serif);font-size:20px;margin:0 0 6px;color:var(--plum-deep)}
+  .gate p{font-size:13.5px;color:var(--ink-2);margin:0 0 14px}
+  .gate input{display:block;width:100%;margin-bottom:10px;background:var(--card-2);border:1px solid var(--line);
+    border-radius:12px;padding:10px 12px;font:inherit}
+  .gate input:focus{outline:2px solid var(--plum);border-color:transparent}
+  .gate .go{background:var(--plum);color:#fff;border:0;border-radius:12px;padding:11px 18px;font:inherit;font-weight:700;cursor:pointer}
+  .gate .err{color:var(--red);font-size:13px;margin-top:8px}
+
+  /* Category cards */
+  .grp{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);margin-top:16px;overflow:hidden}
+  .grp>summary{list-style:none;cursor:pointer;padding:16px 20px;display:flex;align-items:center;gap:14px}
+  .grp>summary::-webkit-details-marker{display:none}
+  .grp>summary:focus-visible{outline:2px solid var(--plum);outline-offset:-3px}
+  .gicon{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;font-size:18px;color:#fff;flex:0 0 auto;box-shadow:var(--shadow-sm)}
+  .gt{font-family:var(--serif);font-size:19px;font-weight:600;color:var(--ink)}
+  .gsub{font-size:12px;color:var(--muted);margin-top:1px}
+  .gright{margin-left:auto;display:flex;align-items:center;gap:12px}
+  .gprog{width:120px;height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+  .gprog i{display:block;height:100%;border-radius:99px;background:var(--sage-deep);transition:width .3s;width:0}
+  .gcount{font-size:12.5px;color:var(--ink-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .caret{color:var(--muted);font-size:12px;transition:transform .2s}
+  .grp[open] .caret{transform:rotate(90deg)}
+
+  .rows{border-top:1px solid var(--line)}
+  .row{display:flex;align-items:center;gap:12px;padding:11px 20px;border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
+  .row:last-child{border-bottom:0}
+  .row:hover{background:var(--card-2)}
+  .row .who{flex:0 0 190px;min-width:0}
+  .row .who b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .subj{flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--ink-2);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .open{flex:0 0 auto;text-decoration:none;background:var(--plum);color:#fff;font-size:12.5px;font-weight:700;
+    padding:8px 14px;border-radius:11px;box-shadow:var(--shadow-sm)}
+  .open:hover{background:var(--plum-deep)}
+  .st{flex:0 0 auto;font:inherit;font-size:12px;font-weight:600;border-radius:10px;border:1px solid var(--line);
+    padding:7px 8px;background:var(--card-2);color:var(--ink-2);cursor:pointer}
+  .row[data-st="Done"]{background:var(--sage-soft)} .row[data-st="Done"] .subj{text-decoration:line-through}
+  .row[data-st="Sent"]{background:var(--blue-soft)}
+  .row[data-st="Awaiting"]{background:var(--amber-soft)}
+  .row[data-st="Skip"]{opacity:.55}
+  .row[data-st="Founder"]{background:var(--plum-soft)}
+  .row[data-st="Zsheet"]{background:#F2ECDA}
+  .row[data-st="Zslack"]{background:#E3ECEE}
+  .note-in{flex:1 1 100%;order:5;font:inherit;font-size:12.5px;color:var(--ink);background:var(--card-2);
+    border:1px solid var(--line);border-radius:10px;padding:7px 11px;margin-top:2px}
+  .note-in::placeholder{color:var(--muted)}
+  .note-in:focus{outline:2px solid var(--plum);border-color:transparent}
+  .note-in.has{background:#FBF6E9;border-color:#E7D9B8}
+  .fcomment{flex:1 1 100%;order:6;font-size:12.5px;color:var(--ink);background:var(--plum-soft);
+    border:1px solid #DCC6D6;border-radius:10px;padding:8px 12px;margin-top:2px;white-space:pre-wrap}
+  .fcomment b{color:var(--plum-deep);font-size:11px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.04em;display:block;margin-bottom:2px}
+  .fcomment .when{font-weight:600;color:var(--ink-2);text-transform:none;letter-spacing:0}
+  .tbub{max-width:88%;padding:7px 11px;border-radius:12px;font-size:12.5px;white-space:pre-wrap;margin-top:6px}
+  .tbub b{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+  .tbub.founder{background:#EFE3EB;border:1px solid #DCC6D6;margin-right:auto}
+  .tbub.founder b{color:var(--plum-deep)}
+  .tbub.om{background:var(--sage-soft);border:1px solid #C7DBCB;margin-left:auto}
+  .tbub.om b{color:var(--sage-deep)}
+  .tbub .when{font-weight:600;text-transform:none;letter-spacing:0;color:var(--ink-2)}
+  .needsme{background:var(--amber-soft)!important;border-color:#E7D9B8!important}
+  .freply{display:flex;gap:8px;margin-top:8px;align-items:center}
+  .freply input{flex:1 1 auto;font:inherit;font-size:12.5px;background:var(--card-2);border:1px solid var(--line);
+    border-radius:9px;padding:6px 10px;color:var(--ink)}
+  .freply input:focus{outline:2px solid var(--plum);border-color:transparent}
+  .freply button{font:inherit;font-size:12px;font-weight:700;background:var(--plum);color:#fff;border:0;
+    border-radius:9px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+  .freply button:hover{background:var(--plum-deep)}
+  .freply .ok{font-size:11.5px;color:var(--sage-deep);font-weight:700;white-space:nowrap}
+  .copy{flex:0 0 auto;font:inherit;font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:11px;
+    padding:7px 11px;background:var(--card-2);color:var(--plum-deep);cursor:pointer;box-shadow:var(--shadow-sm)}
+  .copy:hover{background:var(--plum-soft)}
+  .zflag{flex:0 0 auto;font-size:10.5px;font-weight:700;padding:4px 8px;border-radius:999px;
+    background:#FBF6E9;border:1px solid #E7D9B8;color:var(--amber-deep);white-space:nowrap;cursor:help}
+  .backflag{flex:0 0 auto;font-size:10.5px;font-weight:800;padding:4px 9px;border-radius:999px;
+    background:#E8F4EC;border:1px solid #A8D3BA;color:#1E6B41;white-space:nowrap;cursor:help}
+  .chipback[aria-pressed="false"]{background:#E8F4EC;border-color:#A8D3BA;color:#1E6B41}
+  .backflag.reflag{background:#FDECEC;border-color:#F0B4B4;color:#9B2226}
+  .empty{padding:18px 20px;font-size:13px;color:var(--muted)}
+
+  footer{margin-top:34px;font-size:12.5px;color:var(--muted);text-align:center}
+  footer a{color:var(--plum-deep)}
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(80px);background:var(--ink);color:var(--card);
+    font-size:13px;font-weight:600;padding:10px 18px;border-radius:12px;box-shadow:var(--shadow);transition:transform .25s;z-index:50}
+  #toast.on{transform:translateX(-50%) translateY(0)}
+  @media (max-width:720px){
+    .kpis{grid-template-columns:repeat(2,1fr)}
+    .hero h1{font-size:31px}
+    .row{flex-wrap:wrap} .row .who{flex-basis:100%} .row .subj{flex-basis:100%;order:3}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="left">
+      <h1>Serentia Ops</h1>
+      <div class="sub">Support command centre — every ticket, one click from its chat.</div>
+      <div class="statusline" id="liveline">Loading…</div>
+      <div class="statusline" id="zline"></div>
+    </div>
+    <div class="tiles" aria-hidden="true">
+      <div class="tile t-plum">⚙</div>
+      <div class="tile t-blue">◔</div>
+      <div class="tile t-amber">▥</div>
+      <div class="tile t-amber">▁▃▅</div>
+      <div class="tile t-deep">✉</div>
+      <div class="tile t-sage">✓</div>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpis" hidden>
+    <div class="kpi k-plum"><div class="v" id="k-total">–</div><div class="l">Open queue</div></div>
+    <div class="kpi k-sage"><div class="v" id="k-done">–</div><div class="l">Done / closed</div></div>
+    <div class="kpi k-blue"><div class="v" id="k-sent">–</div><div class="l">Sent / awaiting</div></div>
+    <div class="kpi k-amber"><div class="v" id="k-todo">–</div><div class="l">Still to review</div></div>
+  </div>
+
+  <div class="controls" id="controls" hidden>
+    <input class="search" id="q" type="search" placeholder="Search customer or subject…" aria-label="Search tickets">
+    <select class="sortsel" id="sort" aria-label="Sort tickets">
+      <option value="old">Oldest first</option>
+      <option value="new">Newest first</option>
+      <option value="sla">Closest to SLA breach</option>
+    </select>
+    <button class="btn" id="slack">💬 Slack digest</button>
+    <button class="btn" id="signout" title="Forget Re:amaze credentials on this device">Sign out</button>
+    <span id="syncpill" style="font-size:12px;color:var(--muted);font-weight:600"></span>
+  </div>
+
+  <div class="gate" id="gate" hidden>
+    <h2>Unlock the board</h2>
+    <p>Enter your Re:amaze credentials once — they stay in this browser only and unlock the ticket list and live numbers. Same details as the KPIs &amp; SLA tab.</p>
+    <input id="g-brand" placeholder="Brand subdomain (e.g. serentia-shop)" autocomplete="off">
+    <input id="g-email" placeholder="Login email" autocomplete="username">
+    <input id="g-token" placeholder="API token" type="password" autocomplete="current-password">
+    <button class="go" id="g-go">Unlock</button>
+    <div class="err" id="g-err"></div>
+  </div>
+
+  <div class="filters" id="waves" hidden></div>
+  <div class="filters" id="filters" hidden></div>
+  <div class="sla-legend" id="slaLegend" hidden>
+    <span class="k"><span class="d" style="background:var(--red)"></span> SLA breached</span>
+    <span class="k"><span class="d" style="background:var(--amber)"></span> Approaching SLA</span>
+    <span class="k"><span class="d" style="background:var(--sage)"></span> Within SLA</span>
+    <span class="k" style="color:var(--muted)">Age = time the customer has been waiting</span>
+  </div>
+
+  <div id="groups"></div>
+
+  <footer>
+    <a href="/dashboard.html">Daily dashboard</a> ·
+    <a href="https://docs.google.com/spreadsheets/d/1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY/edit" target="_blank" rel="noopener">Zendrop tracker</a> ·
+    <a href="https://serentia-shop.reamaze.com/admin/conversations" target="_blank" rel="noopener">Re:amaze inbox</a> ·
+    <a href="#" id="flink" title="Read-only view of the tickets marked &quot;Send to founder&quot;">Founder view <span id="fcount"></span></a>
+    <div style="margin-top:6px">Each ticket's reply draft is waiting as an internal note in its chat. Confirm any billing action before sending.</div>
+  </footer>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+(function(){
+  "use strict";
+  var GROUPS=[
+    {k:"cancel",  name:"Cancellations",   icon:"⛔", col:"var(--plum)",  hint:"Stop billing first, then send"},
+    {k:"refund",  name:"Refunds & charges",icon:"↩", col:"var(--red)",   hint:"Verify the charge, refund, then send"},
+    {k:"delivery",name:"Not received",    icon:"📦", col:"var(--amber)", hint:"Chase fulfilment; offer replacement or refund"},
+    {k:"shade",   name:"Wrong shade / returns", icon:"🎨", col:"var(--blue)", hint:"Perfect Match exchange or return"},
+    {k:"question",name:"Product & help",  icon:"💬", col:"var(--sage)",  hint:"Answer and delight"},
+    {k:"other",   name:"Other",           icon:"✨", col:"var(--plum-deep)", hint:"Address changes, thank-yous, misc"}
+  ];
+  var STATUSES=[["Draft","Draft"],["Sent","Sent"],["Awaiting","Awaiting"],["Founder","Send to founder"],["Zsheet","Sent to Zendrop sheet"],["Zslack","Sent to Zendrop Slack"],["Done","Done"],["Skip","Skip"]];
+  // First-response SLA target (hours) by issue group — CS Manual SLA framework
+  // (P1 lost order / charge = 4h · P2 cancel / wrong-item = 6h · P3 question / other = 8h)
+  var SLA_HRS={cancel:6,refund:4,delivery:4,shade:6,question:8,other:8};
+  var SORT="old";
+  function ticketTime(t){ var v=t.ld||t.d; return v? Date.parse(v): NaN; }
+  function slaState(t){
+    var ms=ticketTime(t); if(isNaN(ms)) return {cls:"none",label:"—",due:Infinity};
+    var ageH=(Date.now()-ms)/3.6e6, tgt=SLA_HRS[t.g]||8, remain=tgt-ageH;
+    var ageLabel = ageH<24 ? Math.max(0,Math.round(ageH))+"h" : Math.round(ageH/24)+"d";
+    if(remain<=0) return {cls:"breach",label:ageLabel,due:remain};
+    if(remain<=Math.max(1,tgt*0.5)) return {cls:"soon",label:ageLabel,due:remain};
+    return {cls:"ok",label:ageLabel,due:remain};
+  }
+  var RZ_KEY="serentia.reamaze", ST_KEY="serentia.triageStatus";
+  var CHAT="https://serentia-shop.reamaze.com/admin/conversations/";
+  var NT_KEY="serentia.triageNotes", OP_KEY="serentia.triageOpen";
+  var TICKETS=[], ST={}, NOTES={}, OPEN={}, FILTER="All";
+  var WAVE="All", DRAFTS={}, ZD={orders:{},unresolvedCounts:{}}, THREADS={}, SETAT={};
+  var TODAY_TICKETS=null, TODAY_LOADING=false;
+  var SHEET_URL="https://docs.google.com/spreadsheets/d/1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY/edit";
+  var WAVES=[["Today","⚡ Today"],["All","All waves"],["W1","W1 · 0-7d"],["W2","W2 · 8-30d"],["W3","W3 · 31-90d"],["W4","W4 · 90d+"]];
+  function waveOf(t){
+    var ms=ticketTime(t); if(isNaN(ms)) return "W4";
+    var d=(Date.now()-ms)/864e5;
+    return d<=7?"W1":d<=30?"W2":d<=90?"W3":"W4";
+  }
+  // A ticket you parked on "Awaiting" that the customer has since replied to.
+  // The ball is back with us but the status still reads Awaiting, so these are
+  // the easiest ones in the whole board to lose. SETAT is when you set the
+  // status; ticketTime is the customer's newest message.
+  function repliedSince(t){
+    var set=SETAT[t.l]; if(!set) return false;
+    var setMs=Date.parse(set.indexOf("T")<0 ? set.replace(" ","T")+"Z" : set);
+    var msg=ticketTime(t);
+    return !isNaN(setMs) && !isNaN(msg) && msg>setMs;
+  }
+  function cameBack(t){ return (ST[t.l]||"Draft")==="Awaiting" && repliedSince(t); }
+  // A ticket you closed that the customer has answered since. Closed normally
+  // means gone for good, but a customer writing back is a live thread again,
+  // so these come back into view instead of disappearing silently.
+  function reopened(t){ var s=ST[t.l]||"Draft"; return (s==="Done"||s==="Skip") && repliedSince(t); }
+  function ticketOrders(t){
+    var found={}, m;
+    var re=/SER\s?(\d{4,6})/gi, src=(t.o||"")+" "+(t.s||"");
+    while((m=re.exec(src))) found["SER"+m[1]]=1;
+    return Object.keys(found);
+  }
+  function firstName(t){
+    var c=(t.c||"").trim();
+    if(!c||c.indexOf("@")>=0||c==="(unknown)") return "there";
+    return c.split(/\s+/)[0];
+  }
+  function classify(subj,body){
+    var t=((subj||"")+" "+(body||"")).toLowerCase();
+    if(/cancel|unsubscribe|stop my (order|subscription)/.test(t))return "cancel";
+    if(/refund|charge|money back|dispute|billing|chargeback/.test(t))return "refund";
+    if(/not receiv|never arriv|where.*order|tracking|deliver|shipp|lost my|package|parcel|stuck/.test(t))return "delivery";
+    if(/shade|colou?r|too (light|dark)|match|ivory|buff|honey|caramel|mocha/.test(t))return "shade";
+    if(/\?|how do|what is|when will|ingredient|spf|vegan/.test(t))return "question";
+    return "other";
+  }
+  function isNoiseConv(c){
+    if(c.status===9 || c.status===4) return true; // 9 = marked spam, 4 = archived
+    if(/^\s*automatic reply|out of office/i.test(c.subject||"")) return true;
+    var em=(c.author&&c.author.email)||"";
+    return /@(trustpilot\.com|facebookmail\.com)$/i.test(em);
+  }
+  // Live "Today" view: pull recently-updated unresolved conversations straight
+  // from Re:amaze via the same-origin proxy and keep the ones where the
+  // customer wrote today. No snapshot involved - always current.
+  function fetchToday(cb){
+    var rz=creds(); if(!rz){ cb&&cb(); return; }
+    if(TODAY_LOADING) return;
+    TODAY_LOADING=true;
+    var mid=new Date(); mid.setHours(0,0,0,0); var MID=mid.getTime();
+    var found=[], page=1, MAXP=20;
+    function step(){
+      fetch("/api/reamaze/conversations?filter=unresolved&page="+page,{headers:hdrs(rz)})
+        .then(function(r){ return r.ok?r.json():null; })
+        .then(function(j){
+          if(!j||!j.conversations||!j.conversations.length){ finish(); return; }
+          var oldest=0;
+          j.conversations.forEach(function(c){
+            var up=Date.parse(c.updated_at)||0; if(up>oldest) oldest=up;
+            if(isNoiseConv(c)) return;
+            var lcm=c.last_customer_message;
+            var lcmAt=lcm&&lcm.created_at? Date.parse(lcm.created_at):0;
+            var crAt=Date.parse(c.created_at)||0;
+            // Today admits EVERY thread carrying a message from today, whatever
+            // status it holds. A closed ticket the customer writes to again is
+            // still a live conversation, and hiding it is exactly how messages
+            // get missed. The row keeps whichever status you last set.
+            if(lcmAt>=MID || crAt>=MID){
+              var body=lcm? (lcm.body||"").replace(/<[^>]+>/g," "): "";
+              var who=(c.author&&!/serentia|support@/i.test((c.author.email||"")+(c.author.name||""))&&c.author.name)||
+                       (c.followers&&c.followers[0]&&(c.followers[0].name||c.followers[0].email))||
+                       (c.data&&c.data.primary_follower)||"(unknown)";
+              found.push({g:classify(c.subject,body), c:who, s:c.subject||"(no subject)",
+                l:c.slug, d:c.created_at, ld:(lcm&&lcm.created_at)||c.created_at});
+            }
+          });
+          var oldestOnPage=Math.min.apply(null,j.conversations.map(function(c){return Date.parse(c.updated_at)||Infinity;}));
+          page++;
+          if(page<=Math.min(MAXP, j.page_count||1) && oldestOnPage>=MID) step(); else finish();
+        }).catch(finish);
+    }
+    function finish(){
+      var seen={}; TODAY_TICKETS=found.filter(function(t){ if(seen[t.l])return false; seen[t.l]=1; return true; });
+      TODAY_LOADING=false;
+      cb&&cb();
+    }
+    step();
+  }
+  function reengageDraft(t){
+    return "Hi "+firstName(t)+",\n\n"+
+      "I'm reaching out to sincerely apologise - your message to us went unanswered for far too long, and that's not the standard we hold ourselves to. I'm personally working through every waiting conversation today.\n\n"+
+      "If your issue is still unresolved, please just reply to this message and I'll prioritise it immediately and see it through myself. If it was sorted in the meantime, no need to do anything at all.\n\n"+
+      "Thank you for your patience with us - it won't happen again.\n\n"+
+      "With care,\nKhethiwe - SERENTIA";
+  }
+  function sqlDate(s){ return s? new Date(String(s).replace(" ","T")+"Z") : null; } // D1 datetime('now') -> UTC, no offset
+  try{ ST=JSON.parse(localStorage.getItem(ST_KEY)||"{}"); }catch(e){ ST={}; }
+  try{ NOTES=JSON.parse(localStorage.getItem(NT_KEY)||"{}"); }catch(e){ NOTES={}; }
+  try{ OPEN=JSON.parse(localStorage.getItem(OP_KEY)||"{}"); }catch(e){ OPEN={}; }
+
+  function $(s){ return document.querySelector(s); }
+  function creds(){ try{ return JSON.parse(localStorage.getItem(RZ_KEY)||"null"); }catch(e){ return null; } }
+  function hdrs(rz){ return {"Accept":"application/json","Authorization":"Basic "+btoa(rz.email+":"+rz.token),"X-Reamaze-Brand":rz.brand}; }
+  function toast(m){ var t=$("#toast"); t.textContent=m; t.classList.add("on"); setTimeout(function(){t.classList.remove("on");},1800); }
+  function saveStatus(){ localStorage.setItem(ST_KEY, JSON.stringify(ST)); }
+  function saveNotes(){ localStorage.setItem(NT_KEY, JSON.stringify(NOTES)); }
+  function saveOpen(){ localStorage.setItem(OP_KEY, JSON.stringify(OPEN)); }
+  function stLabel(code){ for(var i=0;i<STATUSES.length;i++){ if(STATUSES[i][0]===code) return STATUSES[i][1]; } return code; }
+  var noteTimer=null, PENDING_N={};
+  function pushNote(slug,note){
+    if(slug) PENDING_N[slug]=note;
+    clearTimeout(noteTimer);
+    noteTimer=setTimeout(function(){
+      var rz=creds(); if(!rz) return;
+      var batch={}; Object.keys(PENDING_N).forEach(function(k){ if(k) batch[k]=PENDING_N[k]; }); PENDING_N={};
+      if(!Object.keys(batch).length){ setSync("Synced"); return; }
+      fetch("/api/status",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs(rz)),
+        body:JSON.stringify({notes:batch})})
+        .then(function(r){ if(!r.ok) throw 0; setSync("Synced"); })
+        .catch(function(){ Object.assign(PENDING_N,batch); setSync("Offline — will retry"); setTimeout(function(){pushNote("","");},4000); });
+    },800);
+    setSync("Saving…");
+  }
+  var syncTimer=null, PENDING={};
+  function pushStatus(slug,st){
+    if(slug) PENDING[slug]=st;
+    clearTimeout(syncTimer);
+    syncTimer=setTimeout(function(){
+      var rz=creds(); if(!rz) return;
+      var batch={}; Object.keys(PENDING).forEach(function(k){ if(k) batch[k]=PENDING[k]; }); PENDING={};
+      if(!Object.keys(batch).length){ setSync("Synced"); return; }
+      fetch("/api/status",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs(rz)),
+        body:JSON.stringify({statuses:batch})})
+        .then(function(r){ if(!r.ok) throw 0; setSync("Synced"); })
+        .catch(function(){ Object.assign(PENDING,batch); setSync("Offline — will retry"); setTimeout(function(){pushStatus("","");},4000); });
+    },600);
+    setSync("Saving…");
+  }
+  function setSync(t){ var el=document.getElementById("syncpill"); if(el) el.textContent=t; }
+
+  function counts(){
+    // "Open queue" excludes closed work, so the tiles add up: open = sent + todo.
+    // Done/closed is counted across every ticket, including ones hidden from the waves.
+    var c={all:TICKETS.length,done:0,sent:0};
+    TICKETS.forEach(function(t){ var s=ST[t.l]||"Draft";
+      if(s==="Done"||s==="Skip") c.done++;
+      else if(s==="Sent"||s==="Awaiting"||s==="Founder"||s==="Zsheet"||s==="Zslack") c.sent++; });
+    c.todo=c.all-c.done-c.sent;
+    c.total=c.all-c.done;
+    return c;
+  }
+  function refreshKpis(){
+    var c=counts();
+    renderFilters(); // keeps the chip counts, "They replied" included, honest
+    $("#k-total").textContent=c.total; $("#k-done").textContent=c.done;
+    var dk=document.querySelector(".k-sage");
+    if(dk && !dk.dataset.wired){ dk.dataset.wired="1"; dk.style.cursor="pointer";
+      dk.title="Click to see every Done and Skipped ticket";
+      dk.addEventListener("click",function(){ FILTER="Done"; WAVE="All"; render(); }); }
+    $("#k-sent").textContent=c.sent; $("#k-todo").textContent=c.todo;
+    GROUPS.forEach(function(g){
+      var items=TICKETS.filter(function(t){return t.g===g.k;});
+      var done=items.filter(function(t){var s=ST[t.l]||"Draft";return s==="Done"||s==="Skip";}).length;
+      var el=document.getElementById("prog-"+g.k);
+      if(el) el.style.width=(items.length? Math.round(100*done/items.length):0)+"%";
+      var cl=document.getElementById("count-"+g.k);
+      if(cl) cl.textContent=done+" / "+items.length;
+    });
+  }
+
+  function renderFilters(){
+    var host=$("#filters"); host.innerHTML=""; host.hidden=false;
+    var options=[["All","All"],["CameBack","↩ They replied"]].concat(STATUSES);
+    options.forEach(function(sp){
+      var n = sp[0]==="All" ? TICKETS.length :
+        sp[0]==="CameBack" ? TICKETS.filter(cameBack).length :
+        TICKETS.filter(function(t){ return (ST[t.l]||"Draft")===sp[0]; }).length;
+      var b=document.createElement("button"); b.className="chip";
+      if(sp[0]==="CameBack"){ b.classList.add("chipback");
+        b.title="You marked these Awaiting and the customer has since written back - the ball is with us again"; }
+      b.setAttribute("aria-pressed", FILTER===sp[0] ? "true":"false");
+      b.innerHTML=sp[1]+'<span class="n">'+n+'</span>';
+      b.addEventListener("click",function(){ FILTER=sp[0]; render(); });
+      host.appendChild(b);
+    });
+    var wh=$("#waves"); wh.innerHTML=""; wh.hidden=false;
+    WAVES.forEach(function(wv){
+      var n;
+      // Counts must match what the list renders: closed is hidden, but a Done
+      // ticket the customer answered is live again and still counts.
+      var live=function(t){ var st=ST[t.l]||"Draft"; return (st!=="Done"&&st!=="Skip") || reopened(t); };
+      if(wv[0]==="Today") n = TODAY_TICKETS===null? "…" : TODAY_TICKETS.length;
+      else if(wv[0]==="All") n = TICKETS.filter(live).length;
+      else n = TICKETS.filter(function(t){ return waveOf(t)===wv[0] && live(t); }).length;
+      var b=document.createElement("button"); b.className="chip";
+      b.setAttribute("aria-pressed", WAVE===wv[0] ? "true":"false");
+      b.innerHTML=wv[1]+'<span class="n">'+n+'</span>';
+      b.addEventListener("click",function(){
+        WAVE=wv[0];
+        if(wv[0]==="Today"){ fetchToday(function(){ render(); toast((TODAY_TICKETS||[]).length+" tickets arrived today"); }); }
+        render();
+      });
+      wh.appendChild(b);
+    });
+  }
+
+  function render(){
+    var _y=window.scrollY;
+    var q=($("#q").value||"").toLowerCase();
+    var host=$("#groups"); host.innerHTML="";
+    GROUPS.forEach(function(g,gi){
+      var SRC = (WAVE==="Today") ? (TODAY_TICKETS||[]) : TICKETS;
+      // A ticket you closed stays closed: Done/Skip never render again unless you
+      // deliberately filter to that status to review them.
+      var showClosed = (FILTER==="Done" || FILTER==="Skip" || WAVE==="Today");
+      var items=SRC.filter(function(t){ var st=ST[t.l]||"Draft";
+        if(!showClosed && (st==="Done"||st==="Skip") && !reopened(t)) return false;
+        return t.g===g.k &&
+        (FILTER==="All" || (FILTER==="CameBack" ? cameBack(t) : st===FILTER)) &&
+        (WAVE==="All" || WAVE==="Today" || waveOf(t)===WAVE) &&
+        (!q || (t.c+" "+t.s+" "+(t.o||"")+" "+(NOTES[t.l]||"")).toLowerCase().indexOf(q)>=0); });
+      items.sort(function(a,b){
+        var ta=ticketTime(a), tb=ticketTime(b);
+        if(isNaN(ta)&&isNaN(tb)) return 0; if(isNaN(ta)) return 1; if(isNaN(tb)) return -1;
+        if(SORT==="new") return tb-ta;
+        if(SORT==="sla") return slaState(a).due - slaState(b).due;
+        return ta-tb; // oldest first
+      });
+      if((FILTER!=="All"||WAVE!=="All") && !items.length) return;
+      var d=document.createElement("details"); d.className="grp"; d.dataset.k=g.k;
+      var forceOpen = !!q || FILTER!=="All" || WAVE!=="All";
+      d.open = forceOpen || OPEN[g.k]===true;
+      d.addEventListener("toggle",function(){
+        if(FILTER==="All" && WAVE==="All" && !($("#q").value||"")){ OPEN[g.k]=d.open; saveOpen(); }
+      });
+      d.innerHTML='<summary><span class="gicon" style="background:'+g.col+'">'+g.icon+'</span>'+
+        '<span><span class="gt">'+g.name+'</span><div class="gsub">'+g.hint+'</div></span>'+
+        '<span class="gright"><span class="gcount" id="count-'+g.k+'"></span>'+
+        '<span class="gprog"><i id="prog-'+g.k+'"></i></span><span class="caret">▶</span></span></summary>';
+      var rows=document.createElement("div"); rows.className="rows";
+      if(!items.length){ rows.innerHTML='<div class="empty">'+(q?"No matches here.":"Nothing in this group.")+'</div>'; }
+      items.forEach(function(t){
+        var st=ST[t.l]||"Draft";
+        var r=document.createElement("div"); r.className="row"; r.dataset.st=st;
+        var who=document.createElement("div"); who.className="who"; var b=document.createElement("b");
+        b.textContent=t.c; who.appendChild(b);
+        var subj=document.createElement("div"); subj.className="subj"; subj.textContent=t.s; subj.title=t.s;
+        var sl=slaState(t);
+        var age=document.createElement("span"); age.className="age "+sl.cls; age.textContent=sl.label;
+        var when = ticketTime(t); 
+        age.title = isNaN(when) ? "No date on file" :
+          ("Customer waiting since "+new Date(when).toLocaleString()+" · P-target "+(SLA_HRS[t.g]||8)+"h"+
+           (sl.cls==="breach"?" · SLA BREACHED":sl.cls==="soon"?" · approaching SLA":" · within SLA"));
+        var a=document.createElement("a"); a.className="open"; a.textContent="Open chat →";
+        a.href=CHAT+encodeURIComponent(t.l); a.target="_blank"; a.rel="noopener";
+        a.title="Opens the conversation in Re:amaze — the reply draft is the internal note";
+        var bf=null;
+        if(cameBack(t) || reopened(t)){
+          var wasClosed=reopened(t);
+          bf=document.createElement("span");
+          bf.className="backflag"+(wasClosed?" reflag":"");
+          bf.textContent=wasClosed?"↩ Reopened":"↩ They replied";
+          bf.title="You set this to "+(ST[t.l]||"Draft")+" on "+
+                   new Date(Date.parse(SETAT[t.l].replace(" ","T")+"Z")).toLocaleString()+
+                   "\nCustomer wrote back "+new Date(ticketTime(t)).toLocaleString();
+        }
+        var zf=null;
+        var ords=ticketOrders(t), hits=[];
+        ords.forEach(function(o){ (ZD.orders[o]||[]).forEach(function(h){ hits.push(o+" — "+h.tab+" row "+h.row+(h.resolved===true?" (resolved)":h.resolved===false?" (OPEN)":"")+(h.note?" · "+h.note:"")); }); });
+        if(hits.length){ zf=document.createElement("span"); zf.className="zflag"; zf.textContent="📋 ZD×"+hits.length;
+          zf.title="On the Zendrop tracker — give feedback on these rows when you resolve this:\n"+hits.join("\n");
+          zf.addEventListener("click",function(){ window.open(SHEET_URL,"_blank","noopener"); }); }
+        var cp=document.createElement("button"); cp.className="copy"; cp.type="button";
+        var hasReal=!!DRAFTS[t.l];
+        cp.textContent=hasReal?"📋 Copy draft":"📋 Copy re-engage";
+        cp.title=hasReal?"Copy the prepared customer-ready reply for this thread":"Copy the apology + still-unresolved? re-engagement message (auto-fills their name)";
+        cp.addEventListener("click",function(){
+          var txt=DRAFTS[t.l]||reengageDraft(t);
+          var done=function(){ toast("Draft copied — paste into Re:amaze"); };
+          if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(function(){ window.prompt("Copy the draft:",txt); });
+          else window.prompt("Copy the draft:",txt);
+        });
+        var sel=document.createElement("select"); sel.className="st"; sel.setAttribute("aria-label","Status for "+t.c);
+        STATUSES.forEach(function(sp){ var o=document.createElement("option"); o.value=sp[0]; o.textContent=sp[1]; if(sp[0]===st)o.selected=true; sel.appendChild(o); });
+        sel.addEventListener("change",function(){
+          var v=sel.value; ST[t.l]=v; saveStatus(); pushStatus(t.l,v); r.dataset.st=v;
+          // Stamp locally too, so a ticket you park right now is not instantly
+          // counted as "came back" off an older server timestamp.
+          SETAT[t.l]=new Date().toISOString();
+          if(bf){ bf.remove(); bf=null; }
+          refreshKpis();
+          // Keep the row obeying the active filter — drop it from view in place,
+          // without a full re-render, so scroll position and open/closed groups stay put.
+          var closing = (v==="Done"||v==="Skip") && FILTER!=="Done" && FILTER!=="Skip";
+          if(closing || (FILTER!=="All" && v!==FILTER)){
+            var grp=r.closest(".grp"), box=r.parentNode; r.remove();
+            if(grp && box && !box.querySelector(".row")) grp.remove();
+            toast(t.c+" → "+stLabel(v)+(closing?" · closed":""));
+          }
+          renderFilters();
+        });
+        var note=document.createElement("input"); note.className="note-in"+((NOTES[t.l]||"")?" has":"");
+        note.type="text"; note.placeholder="📝 Add a note…"; note.value=NOTES[t.l]||"";
+        note.setAttribute("aria-label","Note for "+t.c);
+        note.addEventListener("input",function(){
+          var v=note.value; NOTES[t.l]=v; saveNotes(); pushNote(t.l,v);
+          note.classList.toggle("has", !!v.trim());
+        });
+        r.appendChild(who); r.appendChild(subj); r.appendChild(age); if(bf) r.appendChild(bf); if(zf) r.appendChild(zf); r.appendChild(a); r.appendChild(cp); r.appendChild(sel); r.appendChild(note);
+        var th=THREADS[t.l];
+        if(th && th.length){
+          var fdiv=document.createElement("div"); fdiv.className="fcomment";
+          var lastMsg=th[th.length-1];
+          var needsMe = lastMsg.author==="founder";
+          if(needsMe) fdiv.classList.add("needsme");
+          fdiv.innerHTML='<b>💬 Founder discussion'+(needsMe?' · needs your reply':'')+'</b>';
+          th.forEach(function(m){
+            var b=document.createElement("div");
+            b.className="tbub "+(m.author==="founder"?"founder":"om");
+            var lab=document.createElement("b");
+            lab.textContent=(m.author==="founder"?"Founder":"You");
+            var wsp=document.createElement("span"); wsp.className="when";
+            wsp.textContent=" · "+(m.at? sqlDate(m.at).toLocaleString():"");
+            lab.appendChild(wsp); b.appendChild(lab);
+            var tx=document.createElement("span"); tx.textContent=m.body; b.appendChild(tx);
+            fdiv.appendChild(b);
+          });
+          var fr=document.createElement("div"); fr.className="freply";
+          var fi=document.createElement("input"); fi.type="text";
+          fi.placeholder="Reply to the founder…";
+          var fb=document.createElement("button"); fb.type="button"; fb.textContent="Send reply";
+          var fk=document.createElement("span"); fk.className="ok";
+          function send(){
+            var rz=creds(); if(!rz||!fi.value.trim()) return;
+            fb.disabled=true; fk.textContent="Sending…";
+            var body={omReplies:{}}; body.omReplies[t.l]=fi.value.trim();
+            fetch("/api/status",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs(rz)),
+              body:JSON.stringify(body)})
+              .then(function(res){ if(!res.ok) throw 0; return res.json(); })
+              .then(function(){
+                (THREADS[t.l]=THREADS[t.l]||[]).push({author:"om",body:fi.value.trim(),at:null});
+                fi.value=""; fb.disabled=false; fk.textContent="Sent ✓"; render();
+              })
+              .catch(function(){ fb.disabled=false; fk.textContent="Failed — try again"; });
+          }
+          fb.addEventListener("click",send);
+          fi.addEventListener("keydown",function(e){ if(e.key==="Enter") send(); });
+          fr.appendChild(fi); fr.appendChild(fb); fr.appendChild(fk);
+          fdiv.appendChild(fr);
+          r.appendChild(fdiv);
+        }
+        rows.appendChild(r);
+      });
+      d.appendChild(rows); host.appendChild(d);
+    });
+    refreshKpis(); renderFilters();
+    window.scrollTo(0,_y);
+  }
+
+  function showGate(msg){
+    $("#gate").hidden=false; $("#kpis").hidden=true; $("#controls").hidden=true;
+    $("#liveline").textContent="Locked — enter credentials below.";
+    $("#g-err").textContent=msg||"";
+    var rz=creds()||{};
+    $("#g-brand").value=rz.brand||"serentia-shop"; $("#g-email").value=rz.email||"";
+  }
+
+  function boot(){
+    var rz=creds();
+    if(!rz||!rz.brand||!rz.email||!rz.token){ showGate(""); return; }
+    $("#liveline").textContent="Unlocking…";
+    fetch("/api/tickets",{headers:hdrs(rz)}).then(function(res){
+      if(res.status===401){ showGate("Those credentials were not accepted — check and try again."); return null; }
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      return res.json();
+    }).then(function(j){
+      if(!j) return;
+      TICKETS=j.tickets||[];
+      $("#gate").hidden=true; $("#kpis").hidden=false; $("#controls").hidden=false; $("#slaLegend").hidden=false;
+      var rz2=creds();
+      fetch("/api/status",{headers:hdrs(rz2)}).then(function(r){return r.ok?r.json():null;})
+        .then(function(sj){
+          if(sj&&sj.statuses){
+            var server=sj.statuses, up={};
+            Object.keys(ST).forEach(function(k){ if(ST[k]!=="Draft" && !server[k]) up[k]=ST[k]; });
+            Object.assign(ST, server); saveStatus();
+            var serverN=sj.notes||{}, upN={};
+            Object.keys(NOTES).forEach(function(k){ if(NOTES[k] && !serverN[k]) upN[k]=NOTES[k]; });
+            Object.assign(NOTES, serverN); saveNotes();
+            THREADS=sj.threads||{}; SETAT=sj.updated||{};
+            var body={};
+            if(Object.keys(up).length) body.statuses=up;
+            if(Object.keys(upN).length) body.notes=upN;
+            if(Object.keys(body).length){
+              fetch("/api/status",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},hdrs(rz2)),
+                body:JSON.stringify(body)}).catch(function(){});
+            }
+            setSync("Synced");
+          } else { setSync("Local only"); }
+          render();
+        }).catch(function(){ setSync("Local only"); render(); });
+      render();
+      $("#liveline").innerHTML='<b>● Unlocked</b> · '+TICKETS.length+' tickets in the queue';
+      founderLink(false);
+      var rz3=creds();
+      fetch("/api/drafts",{headers:hdrs(rz3)}).then(function(r){return r.ok?r.json():null;})
+        .then(function(j){ if(j&&j.drafts){ DRAFTS=j.drafts; } }).catch(function(){});
+      fetch("/api/zendrop",{headers:hdrs(rz3)}).then(function(r){return r.ok?r.json():null;})
+        .then(function(j){
+          if(!j||!j.orders) return;
+          ZD=j;
+          // which board tickets reference each sheet order
+          var onBoard={};
+          TICKETS.forEach(function(t){ ticketOrders(t).forEach(function(o){ onBoard[o]=1; }); });
+          var openRows=0, openNoTicket=0;
+          Object.keys(j.orders).forEach(function(o){
+            j.orders[o].forEach(function(h){
+              if(h.resolved===false){ openRows++; if(!onBoard[o]) openNoTicket++; }
+            });
+          });
+          var el=document.getElementById("zline");
+          if(el) el.innerHTML='📋 Zendrop tracker synced · <b>'+openRows+'</b> open sheet rows'+
+            (openNoTicket? ' · <b style="color:var(--red)">'+openNoTicket+' with no ticket on this board</b>':'')+
+            ' · <a href="'+SHEET_URL+'" target="_blank" rel="noopener">open the sheet</a>';
+          render();
+        }).catch(function(){});
+      fetch("/api/reamaze/conversations?filter=unresolved",{headers:hdrs(rz)})
+        .then(function(r){return r.ok?r.json():null;})
+        .then(function(u){ if(u&&typeof u.total_count==="number")
+          $("#liveline").innerHTML='<b>● Live</b> · '+u.total_count.toLocaleString()+' unresolved in Re:amaze · '+TICKETS.length+' tickets on this board'; })
+        .catch(function(){});
+    }).catch(function(e){
+      $("#liveline").textContent="Could not load the board ("+e.message+").";
+    });
+  }
+
+  $("#g-go").addEventListener("click",function(){
+    var rz={brand:$("#g-brand").value.trim().replace(/\..*$/,""),email:$("#g-email").value.trim(),token:$("#g-token").value.trim()};
+    if(!rz.brand||!rz.email||!rz.token){ $("#g-err").textContent="All three fields are needed."; return; }
+    localStorage.setItem(RZ_KEY,JSON.stringify(rz));
+    $("#g-err").textContent=""; boot();
+  });
+  $("#signout").addEventListener("click",function(){
+    localStorage.removeItem(RZ_KEY); toast("Credentials removed"); showGate("");
+  });
+  // Founder share link. The key lives only in a server secret, so it is fetched
+  // on demand with the board's own credentials and copied to the clipboard —
+  // never baked into this file, which is publicly readable.
+  function founderLink(copy){
+    var rz=creds(); if(!rz) return;
+    return fetch("/api/founderlink",{headers:hdrs(rz)})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(j){
+        if(!j) return null;
+        var el=document.getElementById("fcount");
+        if(el) el.textContent="("+j.count+")";
+        if(copy){
+          if(navigator.clipboard&&navigator.clipboard.writeText){
+            navigator.clipboard.writeText(j.url)
+              .then(function(){ toast("Founder link copied — "+j.count+" ticket"+(j.count===1?"":"s")); })
+              .catch(function(){ window.prompt("Copy the founder link:", j.url); });
+          } else { window.prompt("Copy the founder link:", j.url); }
+        }
+        return j;
+      }).catch(function(){ return null; });
+  }
+  $("#flink").addEventListener("click",function(e){
+    e.preventDefault();
+    if(e.shiftKey||e.metaKey||e.ctrlKey){ founderLink(false).then(function(j){ if(j) window.open(j.url,"_blank","noopener"); }); return; }
+    founderLink(true);
+  });
+  $("#q").addEventListener("input",render);
+  $("#sort").addEventListener("change",function(){ SORT=$("#sort").value; render(); });
+  $("#slack").addEventListener("click",function(){
+    var hook=localStorage.getItem("serentia.slackWebhook")||"";
+    if(!/^https:\/\/hooks\.slack\.com\//.test(hook)){
+      hook=prompt("Paste your Slack incoming-webhook URL (stored in this browser only):")||"";
+      if(!/^https:\/\/hooks\.slack\.com\//.test(hook)){ toast("No valid webhook — not sent"); return; }
+      localStorage.setItem("serentia.slackWebhook",hook);
+    }
+    var c=counts();
+    var nf=TICKETS.filter(function(t){return (ST[t.l]||"Draft")==="Founder";}).length;
+    var text=":purple_heart: *Serentia support board*\n• "+c.done+" done · "+c.sent+" sent/awaiting"+(nf?" ("+nf+" with founder)":"")+" · *"+c.todo+" still to review* of "+c.total+
+      "\n• Board: https://serentia-ops.higgsfield.app/support-ops";
+    fetch("/api/slack",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({webhook:hook,text:text})})
+      .then(function(r){return r.json();}).then(function(j){ toast(j.ok?"Digest posted to Slack ✓":"Slack rejected the digest"); })
+      .catch(function(){ toast("Could not reach Slack"); });
+  });
+
+  setInterval(function(){ if(WAVE==="Today" && !TODAY_LOADING){ fetchToday(function(){ render(); }); } }, 180000);
+
+  // Quiet poll so a founder comment shows up without a manual reload —
+  // pulls /api/status only, re-renders in place (scroll/collapse preserved).
+  setInterval(function(){
+    var rz=creds(); if(!rz || !TICKETS.length) return;
+    fetch("/api/status",{headers:hdrs(rz)}).then(function(r){return r.ok?r.json():null;})
+      .then(function(sj){
+        if(!sj) return;
+        // compare founder comment text only — our own reply saves must not trigger the toast
+        var key=function(m){ return JSON.stringify(Object.keys(m).sort().map(function(k){
+          var arr=m[k]||[]; return [k,arr.length,(arr[arr.length-1]||{}).body]; })); };
+        var before=key(THREADS);
+        THREADS=sj.threads||{};
+        if(key(THREADS)!==before){ render(); toast("Founder replied — check the board"); }
+      }).catch(function(){});
+  },45000);
+
+  boot();
+})();
+</script>
+</body>
+</html>

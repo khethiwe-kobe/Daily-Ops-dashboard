@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head><script>window.__hfAuthOrigin="https://auth.higgsfield.app";/**
+ * Approval client SDK — the browser half of the approval flow (paired with
+ * approve.html), injected into every app page. A real file, imported as text and
+ * bundled at deploy (see injected-sdk.ts + the router wrangler). Runs in the
+ * untrusted app page: plain ES5, idempotent (window.__hfPatched), fully
+ * try/catch-wrapped, installed inline+synchronous at <head> so it's present
+ * before any app code runs.
+ *
+ * There is exactly ONE approval trigger: window.hf.requestGeneration(model,
+ * params, opts). The app calls it on the user's Generate action; the modal is
+ * visible exactly while the returned promise is pending. Approve resolves the
+ * minted single-use intent id, which the app threads to its server function and
+ * the fnf SDK adapter sends as the submit body's confirmation_token; cancel
+ * rejects with a DOMException named AbortError (a user choice, not a failure).
+ * Enforcement is entirely server-side: the outbound spend gate 403s any
+ * POST /jobs/submit that doesn't carry a matching minted approval (see
+ * outbound-worker/src/spend-gate.ts), so an app that skips the call gets a
+ * self-describing failed submit, never a silent spend. This SDK never inspects
+ * request bodies and never opens a modal on its own.
+ */
+(function () {
+  try {
+    if (window.__hfPatched) return;
+    window.__hfPatched = true;
+    var of = window.fetch;
+    if (typeof of !== "function") return;
+    // Approval surface origin (auth.<zone>, serving the consent page at
+    // /approve). Preferred source: the origin the router stamps ahead of this
+    // script (injected-sdk.ts) — apps can be served on CUSTOM DOMAINS, where
+    // deriving from the page host would fabricate a non-existent
+    // auth.<customdomain>. Host derivation stays as the fallback for stale
+    // cached HTML that predates the stamp.
+    var APPROVE =
+      typeof window.__hfAuthOrigin === "string" && window.__hfAuthOrigin.indexOf("https://") === 0
+        ? window.__hfAuthOrigin
+        : "https://auth." + location.host.split(".").slice(1).join(".");
+    window.__hfFetches = window.__hfFetches || [];
+
+    // Single-flight: at most ONE approval modal at a time. A fast double-click (or
+    // an app firing two requests) would otherwise open a second scrim+iframe stacked
+    // on the first — so a second approve() while one is open returns the in-flight
+    // promise instead of opening another modal.
+    var openModal = null;
+
+    // The modal is a cross-origin iframe of auth.<zone>/approve: the app cannot
+    // read or script it, and WHO may frame the page is pinned server-side by its
+    // frame-ancestors. The page itself obtains the authoritative price from fnf
+    // before enabling Generate; app-supplied display prices are intentionally
+    // ignored. (The app DOM could still overlay the iframe — the spend gate's
+    // server-side job binding is what makes a spoofed click worthless.)
+    function approve(job) {
+      if (openModal) return openModal;
+      openModal = new Promise(function (resolve, reject) {
+        var grant = null;
+        var ready = false;
+        var done = false;
+        var openedAt = Date.now();
+
+        // Three parent layers so the iframe body can stay fully TRANSPARENT and
+        // still show no white edge:
+        //  - scrim: full-screen div carrying the blur (backdrop-filter samples the
+        //    real app behind it) + a dark tint.
+        //  - wrap: a rounded, overflow:hidden div that CLIPS the iframe. The iframe
+        //    overlaps the backdrop-filter scrim, so Chromium backs its layer
+        //    opaquely; the iframe's OWN border-radius doesn't reliably clip that
+        //    layer (leaving white corners), but a parent clip does. So the corners
+        //    outside the radius are clipped away → the blurred scrim shows through,
+        //    no white ring.
+        //  - frame: the iframe, fully transparent, filling wrap. Its page paints
+        //    only the card (edge-to-edge, no radius — wrap provides the rounding).
+        var scrim = document.createElement("div");
+        scrim.style.cssText =
+          "position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,0.28);" +
+          "-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)";
+        var wrap = document.createElement("div");
+        // opacity:0 until the page reports its height so the modal fades in at its
+        // final size (no empty-frame flash, no height re-center / layout shift).
+        // Round with clip-path (not just border-radius + overflow): clip-path is
+        // applied in the COMPOSITOR, so it clips the cross-origin iframe's own
+        // layer edge cleanly. border-radius/overflow only clip the shape and leave
+        // the iframe's opaque WHITE base fringing at the rounded corners (the white
+        // peek). background = card color as a second line of defense. Both the wrap
+        // and the iframe carry the clip; keep 24px in sync with the card radius.
+        wrap.style.cssText =
+          "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);" +
+          "width:min(400px,calc(100vw - 32px));height:188px;border-radius:24px;overflow:hidden;" +
+          "-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px);" +
+          "background:#23262a;opacity:0;transition:opacity 0.12s ease;z-index:2147483647";
+        var frame = document.createElement("iframe");
+        // referrerPolicy="origin": the page's frame-ancestors admits a registered
+        // CUSTOM DOMAIN only when this origin arrives as the Referer (approve.ts).
+        frame.referrerPolicy = "origin";
+        frame.src = APPROVE + "/approve";
+        frame.allowTransparency = "true";
+        frame.style.cssText =
+          "display:block;width:100%;height:100%;border:0;border-radius:24px;" +
+          "-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px);background:#23262a";
+        wrap.appendChild(frame);
+        var revealTimer = null;
+
+        function cleanup() {
+          if (done) return;
+          done = true;
+          clearTimeout(revealTimer);
+          window.removeEventListener("message", onMessage);
+          document.removeEventListener("keydown", onKey, true);
+          wrap.remove();
+          scrim.remove();
+        }
+
+        function beacon(outcome) {
+          if (!grant) return;
+          try {
+            var payload = JSON.stringify({
+              grant: grant,
+              outcome: outcome,
+              ms_open: Date.now() - openedAt,
+            });
+            var url = APPROVE + "/approve/outcome";
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon(url, new Blob([payload], { type: "text/plain" }));
+            } else {
+              of(url, { method: "POST", body: payload, mode: "no-cors", keepalive: true }).catch(
+                function () {},
+              );
+            }
+          } catch (e) {}
+        }
+
+        // Dismiss = the same "denied" path as the modal's Cancel button, so the
+        // caller turns it into an AbortError (a cancel, not a failure).
+        function dismiss() {
+          if (done) return;
+          cleanup();
+          beacon("denied");
+          var error = new Error("hf: denied");
+          error.hfReason = "denied";
+          reject(error);
+        }
+
+        function onKey(event) {
+          if (event.key === "Escape" || event.keyCode === 27) dismiss();
+        }
+
+        function sendRequest() {
+          if (!ready || !grant || done) return;
+          frame.contentWindow.postMessage(
+            { source: "hf-approve", type: "request", grant: grant, job: job },
+            APPROVE,
+          );
+        }
+
+        function onMessage(event) {
+          if (event.origin !== APPROVE || event.source !== frame.contentWindow) return;
+          var data = event.data || {};
+          if (data.source !== "hf-approve") return;
+          // Size the clip wrapper to the page's reported card height, and reveal
+          // ONLY once sized — modal fades in at its final height (no shift/flash).
+          if (typeof data.h === "number" && data.h > 0) {
+            wrap.style.height = data.h + "px";
+            clearTimeout(revealTimer);
+            wrap.style.opacity = "1";
+          }
+          if (data.type === "ready") {
+            ready = true;
+            sendRequest();
+            return;
+          }
+          if (data.type !== "result") return;
+          cleanup();
+          if (data.ok && typeof data.intentId === "string") {
+            resolve(data.intentId);
+            return;
+          }
+          beacon("denied");
+          var error = new Error("hf: " + (data.reason || "denied"));
+          error.hfReason = data.reason || "denied";
+          reject(error);
+        }
+
+        window.addEventListener("message", onMessage);
+        // Close on background (scrim) click and on Escape. The scrim sits behind
+        // the card (wrap), so a click on it is a click OUTSIDE the modal. Escape
+        // is captured on the parent; the page also handles Escape when focus is
+        // inside the iframe (see approve-ui).
+        scrim.addEventListener("click", dismiss);
+        document.addEventListener("keydown", onKey, true);
+        document.documentElement.appendChild(scrim);
+        document.documentElement.appendChild(wrap);
+        // Fallback: reveal at the default height if the page never reports its
+        // size, so the modal is never stuck hidden.
+        revealTimer = setTimeout(function () {
+          wrap.style.opacity = "1";
+        }, 500);
+
+        of("/__auth/approval-grant", { method: "POST" })
+          .then(function (r) {
+            return r
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (b) {
+                return { s: r.status, b: b };
+              });
+          })
+          .then(function (x) {
+            if (!x.b || !x.b.grant) {
+              cleanup();
+              reject(
+                new Error(
+                  x.s === 401 ? "hf: not signed in" : "hf: approval unavailable (" + x.s + ")",
+                ),
+              );
+              return;
+            }
+            grant = x.b.grant;
+            sendRequest();
+          })
+          .catch(function (error) {
+            cleanup();
+            reject(error);
+          });
+
+        setTimeout(function () {
+          if (!done) {
+            cleanup();
+            beacon("timeout");
+            reject(new Error("hf: approval timeout"));
+          }
+        }, 120000);
+      });
+      // Release the single-flight lock once this approval settles, so the next
+      // genuine generation can open a fresh modal.
+      var release = function () {
+        openModal = null;
+      };
+      openModal.then(release, release);
+      return openModal;
+    }
+
+    // Observability-only fetch patch: request log for debugging (__hfFetches +
+    // console). No interception, no body inspection, no classification — the
+    // approval flow is driven solely by window.hf.requestGeneration.
+    window.fetch = function (input, init) {
+      try {
+        var url = typeof input === "string" ? input : (input && input.url) || String(input);
+        var method = (init && init.method) || (input && input.method) || "GET";
+        window.__hfFetches.push({ url: url, method: method, ts: Date.now() });
+        console.log("[hf-fetch]", method, url);
+      } catch (e) {}
+      return of.apply(this, arguments);
+    };
+
+    // Public SDK. The app contract (see the builder instructions and
+    // docs/generation-approval): call this on the Generate action with the SDK
+    // WIRE shape of the exact submission (wire.jobSetType + wire.params — the
+    // approval is bound server-side to the hash of {job_set_type, params} of the
+    // actual submit body), thread the resolved intent id to the server as the
+    // confirmation token, and render a cancel quietly. opts.credits is an
+    // optional display-only estimate shown in the modal. The id is a token:
+    // never logged here, and apps must not log it either.
+    window.hf = {
+      requestGeneration: function (model, params, opts) {
+        // Fail fast on a bad job identity, BEFORE any UI. The approve page
+        // (protocol.ts) silently ignores a request whose job_set_type isn't a
+        // non-empty string or whose params don't survive structured clone —
+        // which would leave the modal stuck on "Waiting for the app…" with no
+        // way to reply. A typed rejection shows the app its own bug instead.
+        if (typeof model !== "string" || !model) {
+          return Promise.reject(
+            new TypeError("hf: requestGeneration(model, params) — model must be a non-empty string"),
+          );
+        }
+        if (typeof structuredClone === "function") {
+          try {
+            structuredClone(params);
+          } catch (e) {
+            return Promise.reject(
+              new TypeError("hf: requestGeneration params must be structured-cloneable (plain JSON)"),
+            );
+          }
+        }
+        return approve({ job_set_type: model, params: params }).then(
+          function (id) {
+            console.log("[hf] approved");
+            return id;
+          },
+          // Cancel → AbortError, per the app contract ("render a quiet cancelled
+          // state"). Other failures (not signed in, unavailable, timeout) bubble
+          // as-is — those ARE failures.
+          function (e) {
+            if (e && e.hfReason === "denied") {
+              console.log("[hf] cancelled");
+              throw new DOMException("Generation cancelled", "AbortError");
+            }
+            throw e;
+          },
+        );
+      },
+    };
+  } catch (e) {}
+})();
+</script>
+<meta charset="utf-8">
+<title>Serentia — Founder review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.svg">
+<style>
+  :root{
+    --page:#EAE5DC; --card:#F4F1EA; --card-2:#FBF9F5;
+    --ink:#3A2F38; --ink-2:#6E6168; --muted:#988C93; --line:#E3DCD2;
+    --plum:#8C5A78; --plum-deep:#6E4560; --plum-soft:#EFE3EB;
+    --amber:#E3A455; --amber-deep:#B07B2C; --amber-soft:#F8ECDA;
+    --blue:#86A9DC; --blue-deep:#4C6FA5; --blue-soft:#E7EEF8;
+    --sage:#9CBEA4; --sage-deep:#5B7A6B; --sage-soft:#E9F0EA;
+    --red:#C4544E; --red-soft:#F7E4E2;
+    --shadow:0 2px 6px rgba(58,47,56,.06), 0 14px 34px rgba(58,47,56,.10);
+    --shadow-sm:0 1px 3px rgba(58,47,56,.08);
+    --r:22px;
+    --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:26px 18px 80px}
+
+  .hero{background:var(--card);border-radius:28px;box-shadow:var(--shadow);
+    padding:30px 32px 26px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+  .hero h1{font-family:var(--serif);font-weight:600;font-size:34px;color:var(--plum-deep);margin:0}
+  .hero .sub{color:var(--ink-2);font-size:15px;margin-top:5px}
+  .hero .left{flex:1 1 300px;min-width:240px}
+  .tiles{display:grid;grid-template-columns:repeat(3,46px);grid-auto-rows:46px;gap:9px;transform:rotate(-2deg)}
+  .tile{border-radius:12px;box-shadow:var(--shadow-sm);display:grid;place-items:center;font-size:17px;color:#fff}
+  .t-plum{background:var(--plum)} .t-amber{background:var(--amber)} .t-blue{background:var(--blue)}
+  .t-sage{background:var(--sage)} .t-deep{background:var(--plum-deep)}
+  .count{margin-top:13px;font-size:13px;color:var(--muted)}
+  .count b{color:var(--plum-deep);font-size:15px}
+
+  .intro{background:var(--plum-soft);border-radius:16px;padding:15px 18px;margin-top:16px;
+    font-size:13.5px;color:var(--plum-deep);box-shadow:var(--shadow-sm)}
+
+  .card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
+    margin-top:14px;padding:18px 20px}
+  .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .who{font-family:var(--serif);font-size:19px;font-weight:600;color:var(--ink)}
+  .grp{font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:999px;
+    background:var(--blue-soft);color:var(--blue-deep);white-space:nowrap}
+  .age{font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:999px;
+    font-variant-numeric:tabular-nums;white-space:nowrap;margin-left:auto}
+  .age.breach{background:var(--red-soft);color:var(--red)}
+  .age.soon{background:var(--amber-soft);color:var(--amber-deep)}
+  .age.ok{background:var(--sage-soft);color:var(--sage-deep)}
+  .age.none{background:var(--card-2);color:var(--muted)}
+  .subj{font-size:13.5px;color:var(--ink-2);margin-top:7px}
+  .note{margin-top:11px;background:#FBF6E9;border:1px solid #E7D9B8;border-radius:12px;
+    padding:11px 14px;font-size:13.5px;color:var(--ink);white-space:pre-wrap}
+  .note .lbl .when{font-weight:600;color:var(--muted);text-transform:none;letter-spacing:0;font-size:11px}
+  .note .lbl{display:block;font-size:11px;font-weight:700;color:var(--amber-deep);
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+  .sent{margin-top:11px;background:var(--sage-soft);border:1px solid #C7DBCB;border-radius:12px;
+    padding:11px 14px;font-size:13.5px;color:var(--ink);white-space:pre-wrap}
+  .sent .lbl{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--sage-deep);
+    text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+  .sent .when{font-weight:600;color:var(--muted);text-transform:none;letter-spacing:0;font-size:11px}
+  .thread{margin-top:12px;display:flex;flex-direction:column;gap:9px}
+  .bub{max-width:88%;padding:10px 14px;border-radius:14px;font-size:13.5px;white-space:pre-wrap;box-shadow:var(--shadow-sm)}
+  .bub .who{display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;opacity:.85}
+  .bub .when{font-weight:600;text-transform:none;letter-spacing:0;opacity:.75}
+  .bub.founder{align-self:flex-end;background:var(--sage-soft);border:1px solid #C7DBCB;color:var(--ink)}
+  .bub.founder .who{color:var(--sage-deep)}
+  .bub.om{align-self:flex-start;background:var(--plum-soft);border:1px solid #DCC6D6;color:var(--ink)}
+  .bub.om .who{color:var(--plum-deep)}
+  .awaiting{display:inline-block;font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;
+    background:var(--amber-soft);color:var(--amber-deep);margin-left:8px}
+  .reply{margin-top:13px}
+  .reply textarea{display:block;width:100%;min-height:64px;resize:vertical;background:var(--card-2);
+    border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:inherit;font-size:13.5px;color:var(--ink)}
+  .reply textarea:focus{outline:2px solid var(--plum);border-color:transparent}
+  .replyrow{display:flex;align-items:center;gap:10px;margin-top:9px}
+  .send{background:var(--plum);color:#fff;border:0;border-radius:12px;padding:9px 16px;
+    font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+  .send:hover{background:var(--plum-deep)}
+  .send:disabled{opacity:.55;cursor:default}
+  .savepill{font-size:12px;color:var(--muted);font-weight:600}
+  .go{display:inline-block;margin-top:13px;text-decoration:none;background:var(--plum);color:#fff;
+    font-size:13px;font-weight:700;padding:9px 16px;border-radius:12px;box-shadow:var(--shadow-sm)}
+  .go:hover{background:var(--plum-deep)}
+
+  .gate{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:26px;margin-top:16px;max-width:520px}
+  .gate h2{font-family:var(--serif);font-size:20px;margin:0 0 6px;color:var(--plum-deep)}
+  .gate p{font-size:13.5px;color:var(--ink-2);margin:0 0 14px}
+  .gate input{display:block;width:100%;margin-bottom:10px;background:var(--card-2);
+    border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:inherit}
+  .gate input:focus{outline:2px solid var(--plum);border-color:transparent}
+  .gate .btn{background:var(--plum);color:#fff;border:0;border-radius:12px;padding:11px 18px;
+    font:inherit;font-weight:700;cursor:pointer}
+  .err{color:var(--red);font-size:13px;margin-top:8px}
+  .empty{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
+    padding:34px;text-align:center;margin-top:16px;color:var(--ink-2)}
+  .empty .big{font-size:38px}
+  footer{margin-top:30px;font-size:12.5px;color:var(--muted);text-align:center}
+  @media (max-width:640px){ .hero h1{font-size:28px} .age{margin-left:0} }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="left">
+      <h1>Founder review</h1>
+      <div class="sub">Support tickets escalated for your decision.</div>
+      <div class="count" id="count">Loading…</div>
+    </div>
+    <div class="tiles" aria-hidden="true">
+      <div class="tile t-plum">⚙</div><div class="tile t-blue">◔</div><div class="tile t-amber">▥</div>
+      <div class="tile t-amber">▁▃▅</div><div class="tile t-deep">✉</div><div class="tile t-sage">✓</div>
+    </div>
+  </div>
+
+  <div class="gate" id="gate" hidden>
+    <h2>Enter access key</h2>
+    <p>Paste the access key from the link Khethiwe shared. It is remembered on this device only.</p>
+    <input id="k" type="password" placeholder="Access key" autocomplete="current-password">
+    <button class="btn" id="go">View tickets</button>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div id="list"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var KEY="serentia.founderKey";
+  var SLA={cancel:6,refund:4,delivery:4,shade:6,question:8,other:8};
+  function $(s){return document.querySelector(s);}
+  function qkey(){
+    var m=location.search.match(/[?&]key=([^&]+)/);
+    return m?decodeURIComponent(m[1]):(localStorage.getItem(KEY)||"");
+  }
+  function age(t){
+    if(!t.waitingSince) return {cls:"none",label:"—",title:"No date on file"};
+    var ms=Date.parse(t.waitingSince);
+    if(isNaN(ms)) return {cls:"none",label:"—",title:"No date on file"};
+    var h=(Date.now()-ms)/3.6e6, tgt=SLA[t.g]||8, remain=tgt-h;
+    var lbl = h<24 ? Math.max(0,Math.round(h))+"h waiting" : Math.round(h/24)+"d waiting";
+    var cls = remain<=0 ? "breach" : (remain<=Math.max(1,tgt*0.5) ? "soon" : "ok");
+    return {cls:cls,label:lbl,
+      title:"Customer waiting since "+new Date(ms).toLocaleString()+" · target "+tgt+"h"};
+  }
+  function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
+  // Re:amaze titles a first-contact thread with an auto-generated stamp
+  // ("New customer message on 1 June 2026 at 6:54 pm"). It carries no meaning,
+  // so it is suppressed here — the note is what matters on this view.
+  function realSubject(s){
+    if(!s) return "";
+    return /^\s*new customer message on .+ at .+$/i.test(s) ? "" : s;
+  }
+  function sqlDate(s){ return s? new Date(s.replace(" ","T")+"Z") : null; } // D1 datetime('now') -> "YYYY-MM-DD HH:MM:SS" UTC
+  var CURKEY="";
+
+  function sendComment(slug,text,btn,pill,ta){
+    if(!text.trim()) return;
+    btn.disabled=true; pill.textContent="Sending…";
+    fetch("/api/founder?key="+encodeURIComponent(CURKEY),{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({slug:slug,comment:text})
+    }).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+      .then(function(){ pill.textContent="Sent ✓ — Khethiwe will see this on her board"; if(ta) ta.value=""; load(CURKEY,true); })
+      .catch(function(){ btn.disabled=false; pill.textContent="Could not send — try again."; });
+  }
+
+  function threadHtml(thread){
+    if(!thread||!thread.length) return '';
+    var out='<div class="thread">';
+    thread.forEach(function(m){
+      var mine = m.author==='founder';
+      out+='<div class="bub '+(mine?'founder':'om')+'">'+
+        '<span class="who">'+(mine?'You':'Khethiwe')+
+        ' <span class="when">· '+(m.at? sqlDate(m.at).toLocaleString():'')+'</span></span>'+
+        esc(m.body)+'</div>';
+    });
+    return out+'</div>';
+  }
+
+  function render(j){
+    var host=$("#list"); host.innerHTML="";
+    $("#count").innerHTML="<b>"+j.count+"</b> ticket"+(j.count===1?"":"s")+" waiting on you";
+    if(!j.count){
+      host.innerHTML='<div class="empty"><div class="big">✓</div>'+
+        '<p>Nothing needs your decision right now.</p></div>';
+      return;
+    }
+    j.tickets.forEach(function(t){
+      var a=age(t), subj=realSubject(t.subject);
+      var d=document.createElement("div"); d.className="card";
+      d.innerHTML='<div class="top"><span class="who">'+esc(t.customer)+'</span>'+
+        '<span class="grp">'+esc(t.group)+'</span>'+
+        '<span class="age '+a.cls+'" title="'+esc(a.title)+'">'+a.label+'</span>'+
+        (t.awaitingFounder? '<span class="awaiting">⬅ needs your reply</span>':'')+'</div>'+
+        (subj? '<div class="subj">'+esc(subj)+'</div>' : '')+
+        (t.note? '<div class="note"><span class="lbl">Note from Khethiwe</span>'+esc(t.note)+'</div>' : '')+
+        threadHtml(t.thread)+
+        '<a class="go" href="'+esc(t.chat)+'" target="_blank" rel="noopener">Open the conversation →</a>';
+      var reply=document.createElement("div"); reply.className="reply";
+      var ta=document.createElement("textarea");
+      ta.placeholder=(t.thread&&t.thread.length)? "Reply to Khethiwe…" : "Leave a comment for Khethiwe — she'll see it on her board…";
+      ta.value="";
+      var rr=document.createElement("div"); rr.className="replyrow";
+      var btn=document.createElement("button"); btn.className="send"; btn.type="button";
+      btn.textContent=(t.thread&&t.thread.length)? "Send reply" : "Send comment";
+      var pill=document.createElement("span"); pill.className="savepill";
+      btn.addEventListener("click",function(){ sendComment(t.slug,ta.value,btn,pill,ta); });
+      rr.appendChild(btn); rr.appendChild(pill);
+      reply.appendChild(ta); reply.appendChild(rr);
+      d.appendChild(reply);
+      host.appendChild(d);
+    });
+    $("#foot").textContent="Updated "+new Date().toLocaleString()+" · comments here appear on Khethiwe's board";
+  }
+
+  function load(k,quiet){
+    if(!k){ $("#gate").hidden=false; $("#count").textContent="Access key needed."; return; }
+    if(!quiet) $("#count").textContent="Loading…";
+    fetch("/api/founder?key="+encodeURIComponent(k)).then(function(r){
+      if(r.status===401){
+        localStorage.removeItem(KEY);
+        $("#gate").hidden=false; $("#err").textContent="That key was not accepted.";
+        $("#count").textContent="Access key needed."; return null;
+      }
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      return r.json();
+    }).then(function(j){
+      if(!j) return;
+      CURKEY=k;
+      localStorage.setItem(KEY,k);
+      $("#gate").hidden=true;
+      history.replaceState(null,"",location.pathname); // keep the key out of the address bar
+      render(j);
+    }).catch(function(e){ $("#count").textContent="Could not load ("+e.message+")."; });
+  }
+
+  $("#go").addEventListener("click",function(){
+    var k=$("#k").value.trim();
+    if(!k){ $("#err").textContent="Please paste the access key."; return; }
+    $("#err").textContent=""; load(k);
+  });
+  $("#k").addEventListener("keydown",function(e){ if(e.key==="Enter") $("#go").click(); });
+
+  load(qkey());
+})();
+</script>
+</body>
+</html>
