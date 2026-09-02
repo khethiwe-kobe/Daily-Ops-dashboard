@@ -608,7 +608,12 @@
   // A ticket you closed that the customer has answered since. Closed normally
   // means gone for good, but a customer writing back is a live thread again,
   // so these come back into view instead of disappearing silently.
-  function reopened(t){ var s=ST[t.l]||"Draft"; return (s==="Done"||s==="Skip") && repliedSince(t); }
+  function reopened(t){
+    // Same rule as cameBack: if the last refresh found we answered in Re:amaze
+    // since, the ball is back with the customer and this is not reopened.
+    if(t.w===0) return false;
+    var s=ST[t.l]||"Draft"; return (s==="Done"||s==="Skip") && repliedSince(t);
+  }
   function ticketOrders(t){
     var found={}, m;
     var re=/SER\s?(\d{4,6})/gi, src=(t.o||"")+" "+(t.s||"");
@@ -905,9 +910,9 @@
         // One click to finish a ticket you have just resolved. Same effect as
         // choosing Done, without opening the dropdown.
         var doneb=null;
-        if(st!=="Done" && st!=="Skip"){
+        if(st!=="Done" && st!=="Skip" || reopened(t)){
           doneb=document.createElement("button"); doneb.className="donebtn"; doneb.type="button";
-          doneb.textContent="✓ Done";
+          doneb.textContent=(st==="Done"||st==="Skip")?"✓ Close again":"✓ Done";
           doneb.title="Mark resolved and close it. It leaves the queue and \"They replied\" until the customer writes again.";
           doneb.addEventListener("click",function(){ applyStatus("Done"); });
         }
