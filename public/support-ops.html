@@ -591,7 +591,11 @@
     var msg=ticketTime(t);
     return !isNaN(setMs) && !isNaN(msg) && msg>setMs;
   }
-  function cameBack(t){ return (ST[t.l]||"Draft")==="Awaiting" && repliedSince(t); }
+  // "They replied" means the customer has written since you last acted on the
+  // ticket, whatever status you left it in - Awaiting, Sent, with the founder,
+  // on a Zendrop list, even closed. Draft is the one exclusion: an untouched
+  // ticket has no action of yours to have replied to.
+  function cameBack(t){ return (ST[t.l]||"Draft")!=="Draft" && repliedSince(t); }
   // A ticket you closed that the customer has answered since. Closed normally
   // means gone for good, but a customer writing back is a live thread again,
   // so these come back into view instead of disappearing silently.
