@@ -81,6 +81,8 @@ for (const c of convs) {
     l: c.slug,
     d: c.created_at,
     ld: lcm.created_at,
+    // w = the customer spoke last, so a reply is genuinely waiting on us.
+    w: 1,
   })
 }
 
@@ -96,7 +98,11 @@ if (BOARD) {
 const file = path.join(process.cwd(), 'data', 'tickets.json')
 const prev = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []
 const seen = new Set(fresh.map((t) => t.l))
-const kept = prev.filter((t) => !seen.has(t.l) && statuses[t.l])
+// A kept ticket is one that dropped out of the fresh queue, which means we
+// have answered it in Re:amaze since. Clear its waiting flag so the board
+// stops showing it as a reply needing attention - this is what takes a name
+// off "They replied" when you answer in Re:amaze rather than on the board.
+const kept = prev.filter((t) => !seen.has(t.l) && statuses[t.l]).map((t) => ({ ...t, w: 0 }))
 
 const out = [...fresh, ...kept]
 fs.writeFileSync(file, JSON.stringify(out))

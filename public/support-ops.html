@@ -454,6 +454,9 @@
   .copy:hover{background:var(--plum-soft)}
   .zflag{flex:0 0 auto;font-size:10.5px;font-weight:700;padding:4px 8px;border-radius:999px;
     background:#FBF6E9;border:1px solid #E7D9B8;color:var(--amber-deep);white-space:nowrap;cursor:help}
+  .donebtn{flex:0 0 auto;font:inherit;font-size:12.5px;font-weight:700;border:1px solid #A8D3BA;border-radius:999px;
+    padding:7px 12px;background:#E8F4EC;color:#1E6B41;cursor:pointer;white-space:nowrap}
+  .donebtn:hover{background:#D6EBDF}
   .backflag{flex:0 0 auto;font-size:10.5px;font-weight:800;padding:4px 9px;border-radius:999px;
     background:#E8F4EC;border:1px solid #A8D3BA;color:#1E6B41;white-space:nowrap;cursor:help}
   .chipback[aria-pressed="false"]{background:#E8F4EC;border-color:#A8D3BA;color:#1E6B41}
@@ -595,7 +598,13 @@
   // ticket, whatever status you left it in - Awaiting, Sent, with the founder,
   // on a Zendrop list, even closed. Draft is the one exclusion: an untouched
   // ticket has no action of yours to have replied to.
-  function cameBack(t){ return (ST[t.l]||"Draft")!=="Draft" && repliedSince(t); }
+  function cameBack(t){
+    // t.w===0 means the last refresh found we had answered in Re:amaze since,
+    // so the ball is back with the customer and this is no longer a reply
+    // waiting on us. Tickets from older files have no w and are unaffected.
+    if(t.w===0) return false;
+    return (ST[t.l]||"Draft")!=="Draft" && repliedSince(t);
+  }
   // A ticket you closed that the customer has answered since. Closed normally
   // means gone for good, but a customer writing back is a live thread again,
   // so these come back into view instead of disappearing silently.
@@ -868,10 +877,16 @@
         });
         var sel=document.createElement("select"); sel.className="st"; sel.setAttribute("aria-label","Status for "+t.c);
         STATUSES.forEach(function(sp){ var o=document.createElement("option"); o.value=sp[0]; o.textContent=sp[1]; if(sp[0]===st)o.selected=true; sel.appendChild(o); });
-        sel.addEventListener("change",function(){
-          var v=sel.value; ST[t.l]=v; saveStatus(); pushStatus(t.l,v); r.dataset.st=v;
-          // Stamp locally too, so a ticket you park right now is not instantly
-          // counted as "came back" off an older server timestamp.
+
+        // Shared by the dropdown and the one-click Done button, so acting on a
+        // ticket always has the same effect: the status saves, the clock
+        // restarts, and the row leaves any list it no longer belongs in.
+        function applyStatus(v){
+          ST[t.l]=v; saveStatus(); pushStatus(t.l,v); r.dataset.st=v;
+          if(sel.value!==v) sel.value=v;
+          // Stamp locally too, so a ticket you act on right now is not instantly
+          // counted as "they replied" off an older server timestamp. This is what
+          // takes the name off the list until the customer writes again.
           SETAT[t.l]=new Date().toISOString();
           if(bf){ bf.remove(); bf=null; }
           refreshKpis();
@@ -884,7 +899,18 @@
             toast(t.c+" → "+stLabel(v)+(closing?" · closed":""));
           }
           renderFilters();
-        });
+        }
+        sel.addEventListener("change",function(){ applyStatus(sel.value); });
+
+        // One click to finish a ticket you have just resolved. Same effect as
+        // choosing Done, without opening the dropdown.
+        var doneb=null;
+        if(st!=="Done" && st!=="Skip"){
+          doneb=document.createElement("button"); doneb.className="donebtn"; doneb.type="button";
+          doneb.textContent="✓ Done";
+          doneb.title="Mark resolved and close it. It leaves the queue and \"They replied\" until the customer writes again.";
+          doneb.addEventListener("click",function(){ applyStatus("Done"); });
+        }
         var note=document.createElement("input"); note.className="note-in"+((NOTES[t.l]||"")?" has":"");
         note.type="text"; note.placeholder="📝 Add a note…"; note.value=NOTES[t.l]||"";
         note.setAttribute("aria-label","Note for "+t.c);
@@ -892,7 +918,7 @@
           var v=note.value; NOTES[t.l]=v; saveNotes(); pushNote(t.l,v);
           note.classList.toggle("has", !!v.trim());
         });
-        r.appendChild(who); r.appendChild(subj); r.appendChild(age); if(bf) r.appendChild(bf); if(zf) r.appendChild(zf); r.appendChild(a); r.appendChild(cp); r.appendChild(sel); r.appendChild(note);
+        r.appendChild(who); r.appendChild(subj); r.appendChild(age); if(bf) r.appendChild(bf); if(zf) r.appendChild(zf); r.appendChild(a); r.appendChild(cp); if(doneb) r.appendChild(doneb); r.appendChild(sel); r.appendChild(note);
         var th=THREADS[t.l];
         if(th && th.length){
           var fdiv=document.createElement("div"); fdiv.className="fcomment";
