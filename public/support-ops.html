@@ -576,6 +576,9 @@
   var NT_KEY="serentia.triageNotes", OP_KEY="serentia.triageOpen";
   var TICKETS=[], ST={}, NOTES={}, OPEN={}, FILTER="All";
   var WAVE="All", DRAFTS={}, ZD={orders:{},unresolvedCounts:{}}, THREADS={}, SETAT={};
+  // Slugs where Re:amaze says the CUSTOMER spoke last, fetched live. Null until
+  // it loads; the baked t.w flag is the fallback until then.
+  var AWAIT=null;
   var TODAY_TICKETS=null, TODAY_LOADING=false;
   var SHEET_URL="https://docs.google.com/spreadsheets/d/1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY/edit";
   var WAVES=[["Today","⚡ Today"],["All","All waves"],["W1","W1 · 0-7d"],["W2","W2 · 8-30d"],["W3","W3 · 31-90d"],["W4","W4 · 90d+"]];
@@ -598,20 +601,23 @@
   // ticket, whatever status you left it in - Awaiting, Sent, with the founder,
   // on a Zendrop list, even closed. Draft is the one exclusion: an untouched
   // ticket has no action of yours to have replied to.
+  // Is the customer genuinely the last to have spoken? Live Re:amaze wins;
+  // until that loads we fall back to the w flag baked in by the daily refresh.
+  // Either way, if OUR TEAM sent the last message this is false and the ticket
+  // shows in neither "They replied" nor as Reopened.
+  function theySpokeLast(t){
+    if(AWAIT) return AWAIT[t.l]===1;
+    return t.w!==0;
+  }
   function cameBack(t){
-    // t.w===0 means the last refresh found we had answered in Re:amaze since,
-    // so the ball is back with the customer and this is no longer a reply
-    // waiting on us. Tickets from older files have no w and are unaffected.
-    if(t.w===0) return false;
+    if(!theySpokeLast(t)) return false;
     return (ST[t.l]||"Draft")!=="Draft" && repliedSince(t);
   }
   // A ticket you closed that the customer has answered since. Closed normally
   // means gone for good, but a customer writing back is a live thread again,
   // so these come back into view instead of disappearing silently.
   function reopened(t){
-    // Same rule as cameBack: if the last refresh found we answered in Re:amaze
-    // since, the ball is back with the customer and this is not reopened.
-    if(t.w===0) return false;
+    if(!theySpokeLast(t)) return false;
     var s=ST[t.l]||"Draft"; return (s==="Done"||s==="Skip") && repliedSince(t);
   }
   function ticketOrders(t){
@@ -643,6 +649,25 @@
   // Live "Today" view: pull recently-updated unresolved conversations straight
   // from Re:amaze via the same-origin proxy and keep the ones where the
   // customer wrote today. No snapshot involved - always current.
+  // Ask Re:amaze who currently has the ball. Runs after the board is already
+  // on screen, so a slow scan never delays the first paint, and re-runs every
+  // few minutes so a reply you send in Re:amaze clears the flag on its own.
+  var AWAIT_LOADING=false;
+  function pullAwaiting(){
+    var rz=creds(); if(!rz || AWAIT_LOADING) return;
+    AWAIT_LOADING=true;
+    fetch("/api/awaiting",{headers:hdrs(rz)})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(j){
+        AWAIT_LOADING=false;
+        if(!j||!j.slugs) return;
+        var m={}; for(var i=0;i<j.slugs.length;i++) m[j.slugs[i]]=1;
+        AWAIT=m;
+        render();
+      })
+      .catch(function(){ AWAIT_LOADING=false; });
+  }
+
   function fetchToday(cb){
     var rz=creds(); if(!rz){ cb&&cb(); return; }
     if(TODAY_LOADING) return;
@@ -1019,6 +1044,7 @@
       render();
       $("#liveline").innerHTML='<b>● Unlocked</b> · '+TICKETS.length+' tickets in the queue';
       founderLink(false);
+      pullAwaiting();
       var rz3=creds();
       fetch("/api/drafts",{headers:hdrs(rz3)}).then(function(r){return r.ok?r.json():null;})
         .then(function(j){ if(j&&j.drafts){ DRAFTS=j.drafts; } }).catch(function(){});
@@ -1105,6 +1131,7 @@
   });
 
   setInterval(function(){ if(WAVE==="Today" && !TODAY_LOADING){ fetchToday(function(){ render(); }); } }, 180000);
+  setInterval(pullAwaiting, 300000);
 
   // Quiet poll so a founder comment shows up without a manual reload —
   // pulls /api/status only, re-renders in place (scroll/collapse preserved).
