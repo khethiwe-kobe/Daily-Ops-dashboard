@@ -16,15 +16,15 @@ ticket file frozen for five days.
 | `/feedback` | Customer feedback themes, praise, complaints, recommendations. |
 | `/api/health` | Unauthenticated. Says whether the database is wired up. |
 | `/vote` | Thornies Matric Dance 2026 voting page. Public; send this link to voters. |
-| `/matric-dance` | Live results board for the dance. Opened with `?key=<SYNC_KEY>`. |
+| `/matric-dance` | Live results board for the dance. Needs the board's access key (or `SYNC_KEY`). |
 
 ## Environment variables
 
 | Name | Required | Notes |
 |---|---|---|
 | `POSTGRES_URL` | yes | Pooled connection string. Neon, Supabase and Vercel Postgres all work. |
-| `SYNC_KEY` | yes | Long random string. Gates `/founder`, `/api/founder` and the `/matric-dance` results board. |
-| `PROM_VOTING_CLOSED` | no | Set to `1` to stop accepting matric dance votes. The results board keeps working. |
+| `SYNC_KEY` | yes | Long random string. Gates `/founder` and `/api/founder`. Also opens `/matric-dance`. |
+| `PROM_VOTING_CLOSED` | no | Set to `1` to force matric dance voting closed, overriding the switch on the board. |
 
 The board itself has no password. It is gated on the operator's own Re:amaze
 credentials, which the browser holds and every API route re-verifies against
@@ -41,17 +41,22 @@ Two pages, one table (`prom_votes`, created on first use like the others).
   second submit from the same phone *replaces* the earlier vote instead of
   adding one. It is a soft guard, not a login: a voter who clears site data
   can vote again.
-- `/matric-dance?key=<SYNC_KEY>` is the organisers' board. It refreshes every
-  four seconds and shows both races, the current leader, and the vote count
-  per name. The key is moved out of the URL into `sessionStorage` on load, so
-  the address bar can be shared on screen.
+- `/matric-dance` is the organisers' board. It refreshes every four seconds
+  and shows both races, the current leader, and the vote count per name. It
+  has its own access key, created once on first visit (or via
+  `POST /api/prom/setup`) and stored hashed in `prom_settings`; `SYNC_KEY`
+  opens it too. The key can be passed as `?key=`, which is moved into
+  `sessionStorage` on load so the address bar can be shared on screen. The
+  board has buttons to close or reopen voting, change the key, and reset all
+  votes, so the night can be run from a phone with no Vercel access.
 
 Names are matched tightly (`lib/names.js`): case, accents, punctuation and
 spacing are ignored; one or two typos are forgiven on longer names but first
 names must agree, so "Ava Naidoo" and "Eva Naidoo" stay separate; a lone first
 name folds into the only full name that starts with it. Every spelling a
 candidate absorbed is shown under their bar so the organiser can see exactly
-what was merged. Set `PROM_VOTING_CLOSED=1` to close voting.
+what was merged. Close voting from the board, or set `PROM_VOTING_CLOSED=1`
+to force it closed from the environment.
 
 ## First run
 

@@ -1,19 +1,15 @@
 import { q, ensureSchema } from '../../../../lib/db'
 import { tally } from '../../../../lib/names'
+import { organiser, votingOpen, unauthorized } from '../../../../lib/prom'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// The results board is for the organisers only, so it is gated on SYNC_KEY
-// the same way /founder is. Voters never need this.
-function keyOk(request) {
-  const key = new URL(request.url).searchParams.get('key') || ''
-  return !!process.env.SYNC_KEY && key === process.env.SYNC_KEY
-}
-
+// The results board is for the organisers only: it needs the board's access
+// key (or SYNC_KEY). Voters never need this.
 export async function GET(request) {
-  if (!keyOk(request)) return Response.json({ error: 'unauthorized' }, { status: 401 })
   await ensureSchema()
+  if (!(await organiser(request))) return unauthorized()
 
   const rows = await q('SELECT king, queen, updated_at FROM prom_votes')
   let last = null
@@ -25,7 +21,7 @@ export async function GET(request) {
   return Response.json({
     total,
     lastVoteAt: last ? new Date(last).toISOString() : null,
-    open: !/^(1|true|yes)$/i.test(process.env.PROM_VOTING_CLOSED || ''),
+    open: await votingOpen(),
     king: withShare(tally(rows.map((r) => r.king))),
     queen: withShare(tally(rows.map((r) => r.queen))),
   }, { headers: { 'Cache-Control': 'no-store' } })

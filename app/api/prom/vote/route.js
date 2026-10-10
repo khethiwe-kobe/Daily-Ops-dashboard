@@ -1,14 +1,9 @@
 import { q, ensureSchema } from '../../../../lib/db'
 import { normalizeName } from '../../../../lib/names'
+import { votingOpen, NO_STORE } from '../../../../lib/prom'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-
-const NO_STORE = { 'Cache-Control': 'no-store' }
-
-// Set PROM_VOTING_CLOSED=1 in the environment to stop accepting votes. The
-// results board keeps working either way.
-const votingOpen = () => !/^(1|true|yes)$/i.test(process.env.PROM_VOTING_CLOSED || '')
 
 // Letters (any script), spaces, hyphens and apostrophes; 2 to 60 characters.
 const okName = (s) => typeof s === 'string' && /^[\p{L}\p{M}][\p{L}\p{M}' .-]{1,59}$/u.test(s.trim())
@@ -21,12 +16,12 @@ async function total() {
 // Unauthenticated status for the voting page: is voting open, how many votes.
 export async function GET() {
   await ensureSchema()
-  return Response.json({ open: votingOpen(), total: await total() }, { headers: NO_STORE })
+  return Response.json({ open: await votingOpen(), total: await total() }, { headers: NO_STORE })
 }
 
 export async function POST(request) {
-  if (!votingOpen()) return Response.json({ error: 'Voting has closed.' }, { status: 403, headers: NO_STORE })
   await ensureSchema()
+  if (!(await votingOpen())) return Response.json({ error: 'Voting has closed.' }, { status: 403, headers: NO_STORE })
   let body = null
   try { body = await request.json() } catch { body = null }
 
