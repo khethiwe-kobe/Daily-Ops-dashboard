@@ -7,6 +7,9 @@ const nextConfig = {
       { source: '/support-ops', destination: '/support-ops.html' },
       { source: '/founder', destination: '/founder.html' },
       { source: '/feedback', destination: '/feedback.html' },
+      // Thornies matric dance 2026: the voting link and the live results board.
+      { source: '/vote', destination: '/vote.html' },
+      { source: '/matric-dance', destination: '/matric-dance.html' },
     ]
   },
 }
