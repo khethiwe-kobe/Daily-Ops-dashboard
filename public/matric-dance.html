@@ -96,6 +96,10 @@
   .gate { max-width: 440px; margin: 60px auto; text-align: center; }
   .gate input { width: 100%; font: inherit; font-size: 16px; color: var(--ink); padding: 13px 15px; border-radius: 12px; border: 1px solid var(--line); background: #0E0D0B; margin: 14px 0 10px; outline: none; }
   .gate input:focus { border-color: var(--gold); box-shadow: 0 0 0 4px rgba(212,175,55,.14); }
+  .gate .note { color: var(--ink-2); font-size: 14px; line-height: 1.5; }
+  button.ghost.danger { color: var(--err); border-color: rgba(224,122,106,.4); }
+  button.ghost.danger:hover { background: rgba(224,122,106,.08); }
+  .tools .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
   .gate button { width: 100%; font: inherit; font-weight: 600; color: #121008; background: linear-gradient(180deg, var(--gold-light), var(--gold) 60%, var(--gold-deep)); border: 0; border-radius: 12px; padding: 13px; cursor: pointer; }
   .hidden { display: none !important; }
   .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--gold-light); color: #121008; padding: 10px 16px; border-radius: 12px; font-size: 13.5px; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -109,8 +113,14 @@
   <div id="gate" class="gate hidden">
     <div class="eyebrow">Thornies · Matric Dance 2026</div>
     <h1>Live <em>results</em></h1>
-    <p style="color:var(--ink-2)">This board is for organisers. Enter the access key.</p>
-    <form id="gateForm"><input id="gateKey" type="password" placeholder="Access key" autocomplete="off"><button type="submit">Open the board</button></form>
+    <div id="gateLogin">
+      <p class="note">This board is for organisers. Enter the access key.</p>
+      <form id="gateForm"><input id="gateKey" type="password" placeholder="Access key" autocomplete="off"><button type="submit">Open the board</button></form>
+    </div>
+    <div id="gateSetup" class="hidden">
+      <p class="note">No access key exists yet. Create one now. You'll use it to open this board and to close voting on the night, so keep it somewhere safe.</p>
+      <form id="setupForm"><input id="setupKey" type="text" placeholder="Choose an access key (8+ characters)" autocomplete="off" minlength="8"><button type="submit">Create key and open the board</button></form>
+    </div>
     <p id="gateErr" style="color:#E07A6A;font-size:14px"></p>
   </div>
 
@@ -129,6 +139,10 @@
       <button class="ghost" id="copy">Copy voting link</button>
       <button class="ghost" id="open">Open voting page</button>
       <button class="ghost" id="pause">Pause updates</button>
+      <span class="sep"></span>
+      <button class="ghost" id="toggle">Close voting</button>
+      <button class="ghost" id="changeKey">Change key</button>
+      <button class="ghost danger" id="reset">Reset votes</button>
     </div>
     <div class="grid">
       <section class="panel" id="kingPanel">
@@ -206,6 +220,7 @@
   function render(d) {
     document.getElementById('total').textContent = d.total
     document.getElementById('status').textContent = d.open ? 'Voting open' : 'Voting closed'
+    document.getElementById('toggle').textContent = d.open ? 'Close voting' : 'Reopen voting'
     document.getElementById('last').textContent = ago(d.lastVoteAt)
     document.getElementById('last').dataset.iso = d.lastVoteAt || ''
     renderPanel('king', d.king, d.total)
@@ -232,6 +247,7 @@
           board.classList.add('hidden'); gate.classList.remove('hidden')
           document.getElementById('gateErr').textContent = key ? 'That key is not right.' : ''
           stop()
+          showGate()
         } else {
           live.classList.add('err'); live.querySelector('span').textContent = 'Connection lost, retrying'
         }
@@ -247,6 +263,58 @@
     var el = document.getElementById('last')
     if (el.dataset.iso) el.textContent = ago(el.dataset.iso)
   }, 5000)
+
+  // First run: no key exists yet, so offer to create one instead of asking for it.
+  function showGate() {
+    fetch('/api/prom/setup', { cache: 'no-store' }).then(function (r) { return r.json() }).then(function (s) {
+      document.getElementById('gateLogin').classList.toggle('hidden', !s.configured)
+      document.getElementById('gateSetup').classList.toggle('hidden', !!s.configured)
+    }).catch(function () {})
+  }
+  document.getElementById('setupForm').addEventListener('submit', function (e) {
+    e.preventDefault()
+    var k = document.getElementById('setupKey').value.trim()
+    if (k.length < 8) { document.getElementById('gateErr').textContent = 'Use at least 8 characters.'; return }
+    fetch('/api/prom/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: k }) })
+      .then(function (r) { return r.json() })
+      .then(function (j) {
+        if (!j.ok) { document.getElementById('gateErr').textContent = j.error || 'Could not create the key.'; showGate(); return }
+        key = k
+        try { sessionStorage.setItem(STORE, key) } catch (err) {}
+        document.getElementById('gateErr').textContent = ''
+        load().then(start)
+      })
+  })
+
+  function admin(payload) {
+    payload.key = key
+    return fetch('/api/prom/admin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { return r.json() })
+      .then(function (j) { if (!j.ok) throw new Error(j.error || 'failed'); return j })
+  }
+  document.getElementById('toggle').addEventListener('click', function () {
+    var closing = this.textContent.indexOf('Close') === 0
+    if (!window.confirm(closing ? 'Close voting now? Voters will see "Voting has closed".' : 'Reopen voting?')) return
+    admin({ action: closing ? 'close' : 'open' }).then(function (j) { say(j.open ? 'Voting reopened' : 'Voting closed'); load() })
+      .catch(function (e) { say(e.message) })
+  })
+  document.getElementById('reset').addEventListener('click', function () {
+    var word = window.prompt('This deletes every vote and cannot be undone. Type RESET to confirm.')
+    if (word !== 'RESET') return
+    admin({ action: 'reset', confirm: 'RESET' }).then(function () { say('All votes cleared'); load() })
+      .catch(function (e) { say(e.message) })
+  })
+  document.getElementById('changeKey').addEventListener('click', function () {
+    var k = window.prompt('New access key (8 to 64 characters):')
+    if (k === null) return
+    k = k.trim()
+    if (k.length < 8) { say('Use at least 8 characters'); return }
+    admin({ action: 'change_key', newKey: k }).then(function () {
+      key = k
+      try { sessionStorage.setItem(STORE, key) } catch (err) {}
+      say('Access key changed')
+    }).catch(function (e) { say(e.message) })
+  })
 
   document.getElementById('gateForm').addEventListener('submit', function (e) {
     e.preventDefault()
@@ -283,7 +351,7 @@
   })
 
   if (key) { history.replaceState(null, '', location.pathname); load().then(start) }
-  else gate.classList.remove('hidden')
+  else { gate.classList.remove('hidden'); showGate() }
 })()
 </script>
 </body>
