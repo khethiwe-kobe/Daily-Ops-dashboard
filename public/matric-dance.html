@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thornies Matric Dance 2026 · Live results</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F3EBE1;
+    --bg-2: #EAD9C6;
+    --card: #FFFCF8;
+    --ink: #3A2A1F;
+    --ink-2: #6F5A4B;
+    --muted: #A08B79;
+    --line: #E6D8C8;
+    --track: #F1E6D9;
+    --accent: #9C6B43;
+    --accent-dark: #7E5332;
+    --nude: #D9B493;
+    --gold: #C9A66B;
+    --live: #5E8A5A;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100dvh; font-family: 'Jost', system-ui, sans-serif; color: var(--ink); background: var(--bg);
+    background-image:
+      radial-gradient(1000px 500px at 0% -10%, #FFF7EE 0%, transparent 60%),
+      radial-gradient(800px 600px at 100% 100%, var(--bg-2) 0%, transparent 60%);
+    padding: 24px 16px 48px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 24px; margin-bottom: 22px; }
+  .eyebrow { font-size: 12px; letter-spacing: .22em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+  h1 { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 600; font-size: clamp(34px, 5vw, 46px); line-height: 1; margin: 0; letter-spacing: -.01em; }
+  h1 em { font-style: italic; color: var(--accent-dark); }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; min-width: 120px; }
+  .stat small { display: block; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .stat b { display: block; font-size: 22px; font-weight: 600; line-height: 1.2; }
+  .stat .sub { font-size: 12.5px; color: var(--ink-2); }
+  .live { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); white-space: nowrap; }
+  .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 0 rgba(94,138,90,.5); animation: pulse 1.8s infinite; }
+  .live.paused i { background: var(--muted); animation: none; }
+  .live.err i { background: #B5543E; animation: none; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(94,138,90,.45) } 70% { box-shadow: 0 0 0 8px rgba(94,138,90,0) } 100% { box-shadow: 0 0 0 0 rgba(94,138,90,0) } }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 18px; }
+  button.ghost { font: inherit; font-weight: 500; font-size: 13.5px; color: var(--accent-dark); background: var(--card); border: 1.5px solid var(--line); border-radius: 11px; padding: 8px 13px; cursor: pointer; }
+  button.ghost:hover { border-color: var(--nude); background: #FFF6EC; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 22px 22px 18px; box-shadow: 0 18px 40px -30px rgba(58,42,31,.35); }
+  .panel h2 { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 600; font-size: 28px; margin: 0; display: flex; align-items: center; gap: 10px; }
+  .panel h2 svg { width: 26px; height: 26px; }
+  .panel .count { color: var(--muted); font-size: 13px; margin: 2px 0 16px; }
+  .leader { display: flex; align-items: center; gap: 14px; background: linear-gradient(135deg, #FFF6EA, #F6E6D3); border: 1px solid #ECD6BC; border-radius: 16px; padding: 14px 16px; margin-bottom: 18px; }
+  .leader .ring { width: 48px; height: 48px; border-radius: 50%; flex: none; background: var(--card); border: 1px solid var(--gold); display: grid; place-items: center; }
+  .leader small { display: block; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  .leader b { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 600; font-size: 26px; line-height: 1.1; display: block; }
+  .leader .lead { font-size: 13px; color: var(--ink-2); }
+  .leader.tie b { font-size: 21px; }
+  .empty { color: var(--muted); font-size: 14.5px; padding: 22px 0 10px; text-align: center; }
+  .rows { display: grid; gap: 10px; }
+  .row { display: grid; grid-template-columns: 22px 1fr auto; column-gap: 10px; row-gap: 5px; align-items: center; padding: 4px 6px; border-radius: 10px; position: relative; }
+  .row:hover { background: #FBF4EB; }
+  .row .rank { font-size: 12.5px; color: var(--muted); font-weight: 600; text-align: right; }
+  .row .name { font-weight: 500; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .num { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .row .num span { color: var(--muted); font-weight: 500; margin-left: 5px; }
+  .row .track { grid-column: 2 / 4; height: 10px; background: var(--track); border-radius: 0 4px 4px 0; overflow: hidden; }
+  .row .bar { height: 100%; width: 0; background: var(--nude); border-radius: 0 4px 4px 0; transition: width .5s ease; }
+  .row.first .bar { background: linear-gradient(90deg, var(--accent), var(--accent-dark)); }
+  .row .variants { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
+  .row .variants span { display: inline-block; background: #F5EBDF; border-radius: 6px; padding: 1px 7px; margin: 2px 4px 0 0; color: var(--ink-2); }
+  .tip { position: absolute; z-index: 5; pointer-events: none; background: var(--ink); color: #FFF6EC; font-size: 12.5px; padding: 7px 10px; border-radius: 9px; max-width: 260px; line-height: 1.4; box-shadow: 0 10px 20px -10px rgba(0,0,0,.5); display: none; }
+  .tip b { font-weight: 600; }
+  .gate { max-width: 440px; margin: 60px auto; text-align: center; }
+  .gate input { width: 100%; font: inherit; font-size: 16px; padding: 13px 15px; border-radius: 12px; border: 1.5px solid var(--line); margin: 14px 0 10px; }
+  .gate button { width: 100%; font: inherit; font-weight: 600; color: #FFF8F0; background: linear-gradient(180deg, var(--accent), var(--accent-dark)); border: 0; border-radius: 12px; padding: 13px; cursor: pointer; }
+  .hidden { display: none !important; }
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--ink); color: #FFF6EC; padding: 10px 16px; border-radius: 12px; font-size: 13.5px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.on { opacity: 1; }
+  footer { margin-top: 24px; color: var(--muted); font-size: 12.5px; text-align: center; }
+  @media (max-width: 520px) { .panel { padding: 18px 16px 14px; } .stats { width: 100%; display: grid; grid-template-columns: 1fr 1fr; } .stat { min-width: 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="gate" class="gate hidden">
+    <div class="eyebrow">Thornies · Matric Dance 2026</div>
+    <h1>Live <em>results</em></h1>
+    <p style="color:var(--ink-2)">This board is for organisers. Enter the access key.</p>
+    <form id="gateForm"><input id="gateKey" type="password" placeholder="Access key" autocomplete="off"><button type="submit">Open the board</button></form>
+    <p id="gateErr" style="color:#8A3F2C;font-size:14px"></p>
+  </div>
+
+  <div id="board" class="hidden">
+    <div class="top">
+      <div>
+        <div class="eyebrow">Thornies · Matric Dance 2026</div>
+        <h1>Live <em>results</em></h1>
+      </div>
+      <div class="stats">
+        <div class="stat"><small>Votes</small><b id="total">–</b><div class="sub" id="status">&nbsp;</div></div>
+        <div class="stat"><small>Last vote</small><b id="last" style="font-size:16px">–</b><div class="sub live" id="live"><i></i><span>Updating live</span></div></div>
+      </div>
+    </div>
+    <div class="tools">
+      <button class="ghost" id="copy">Copy voting link</button>
+      <button class="ghost" id="open">Open voting page</button>
+      <button class="ghost" id="pause">Pause updates</button>
+    </div>
+    <div class="grid">
+      <section class="panel" id="kingPanel">
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/></svg>Prom King</h2>
+        <div class="count" id="kingCount">&nbsp;</div>
+        <div id="kingLeader"></div>
+        <div class="rows" id="kingRows"></div>
+      </section>
+      <section class="panel" id="queenPanel">
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/><circle cx="12" cy="5" r="1.2" fill="#9C6B43" stroke="none"/></svg>Prom Queen</h2>
+        <div class="count" id="queenCount">&nbsp;</div>
+        <div id="queenLeader"></div>
+        <div class="rows" id="queenRows"></div>
+      </section>
+    </div>
+    <footer>Close matches in spelling are counted as one person. Hover a name to see the spellings it absorbed.</footer>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  var STORE = 'thornies-prom-key'
+  var params = new URLSearchParams(location.search)
+  var key = params.get('key') || ''
+  if (key) { try { sessionStorage.setItem(STORE, key) } catch (e) {} }
+  else { try { key = sessionStorage.getItem(STORE) || '' } catch (e) {} }
+
+  var gate = document.getElementById('gate'), board = document.getElementById('board')
+  var live = document.getElementById('live'), tip = document.getElementById('tip'), toast = document.getElementById('toast')
+  var paused = false, timer = null, inflight = false
+
+  var VOTE_URL = location.origin + '/vote'
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] }) }
+  function say(t) { toast.textContent = t; toast.classList.add('on'); setTimeout(function () { toast.classList.remove('on') }, 1800) }
+  function ago(iso) {
+    if (!iso) return '–'
+    var s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000)
+    if (s < 10) return 'just now'
+    if (s < 60) return Math.floor(s) + 's ago'
+    if (s < 3600) return Math.floor(s / 60) + ' min ago'
+    if (s < 86400) return Math.floor(s / 3600) + ' h ago'
+    return new Date(iso).toLocaleDateString()
+  }
+  function pct(x) { return Math.round(x * 100) + '%' }
+
+  function renderPanel(id, list, total) {
+    var leaderEl = document.getElementById(id + 'Leader'), rows = document.getElementById(id + 'Rows'), count = document.getElementById(id + 'Count')
+    count.textContent = list.length ? list.length + (list.length === 1 ? ' name' : ' names') + ' on the board' : ''
+    if (!list.length) { leaderEl.innerHTML = ''; rows.innerHTML = '<div class="empty">No votes yet. Share the link to get started.</div>'; return }
+    var top = list[0], tied = list.filter(function (c) { return c.votes === top.votes })
+    var margin = list.length > 1 ? top.votes - list[1].votes : top.votes
+    var leadText = tied.length > 1 ? 'Tied at ' + top.votes + (top.votes === 1 ? ' vote' : ' votes')
+      : top.votes + (top.votes === 1 ? ' vote' : ' votes') + ' · ' + pct(top.share) + (list.length > 1 ? ' · leads by ' + margin : '')
+    leaderEl.innerHTML =
+      '<div class="leader' + (tied.length > 1 ? ' tie' : '') + '">' +
+        '<div class="ring"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/></svg></div>' +
+        '<div><small>' + (tied.length > 1 ? 'Tied for the lead' : 'In the lead') + '</small><b>' +
+        esc(tied.map(function (c) { return c.name }).join(' · ')) + '</b><div class="lead">' + esc(leadText) + '</div></div>' +
+      '</div>'
+    var max = top.votes || 1
+    rows.innerHTML = list.map(function (c, i) {
+      var variants = c.variants.length ? '<div class="variants">also counted: ' + c.variants.slice(0, 4).map(function (v) { return '<span>' + esc(v) + '</span>' }).join('') + (c.variants.length > 4 ? '<span>+' + (c.variants.length - 4) + ' more</span>' : '') + '</div>' : ''
+      return '<div class="row' + (i === 0 ? ' first' : '') + '" data-name="' + esc(c.name) + '" data-votes="' + c.votes + '" data-share="' + pct(c.share) + '" data-variants="' + esc(c.variants.join(', ')) + '">' +
+        '<div class="rank">' + (i + 1) + '</div>' +
+        '<div class="name">' + esc(c.name) + '</div>' +
+        '<div class="num">' + c.votes + '<span>' + pct(c.share) + '</span></div>' +
+        '<div class="track"><div class="bar" style="width:' + (c.votes / max * 100) + '%"></div></div>' +
+        variants +
+      '</div>'
+    }).join('')
+  }
+
+  function render(d) {
+    document.getElementById('total').textContent = d.total
+    document.getElementById('status').textContent = d.open ? 'Voting open' : 'Voting closed'
+    document.getElementById('last').textContent = ago(d.lastVoteAt)
+    document.getElementById('last').dataset.iso = d.lastVoteAt || ''
+    renderPanel('king', d.king, d.total)
+    renderPanel('queen', d.queen, d.total)
+  }
+
+  function load() {
+    if (inflight) return
+    inflight = true
+    return fetch('/api/prom/results?key=' + encodeURIComponent(key), { cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 401) { inflight = false; throw new Error('unauthorized') }
+        return r.json()
+      })
+      .then(function (d) {
+        inflight = false
+        gate.classList.add('hidden'); board.classList.remove('hidden')
+        live.classList.remove('err')
+        render(d)
+      })
+      .catch(function (e) {
+        inflight = false
+        if (e.message === 'unauthorized') {
+          board.classList.add('hidden'); gate.classList.remove('hidden')
+          document.getElementById('gateErr').textContent = key ? 'That key is not right.' : ''
+          stop()
+        } else {
+          live.classList.add('err'); live.querySelector('span').textContent = 'Connection lost, retrying'
+        }
+      })
+  }
+  function start() {
+    stop()
+    timer = setInterval(function () { if (!paused) load() }, 4000)
+  }
+  function stop() { if (timer) clearInterval(timer); timer = null }
+
+  setInterval(function () {
+    var el = document.getElementById('last')
+    if (el.dataset.iso) el.textContent = ago(el.dataset.iso)
+  }, 5000)
+
+  document.getElementById('gateForm').addEventListener('submit', function (e) {
+    e.preventDefault()
+    key = document.getElementById('gateKey').value.trim()
+    try { sessionStorage.setItem(STORE, key) } catch (err) {}
+    history.replaceState(null, '', location.pathname)
+    load().then(start)
+  })
+  document.getElementById('pause').addEventListener('click', function () {
+    paused = !paused
+    this.textContent = paused ? 'Resume updates' : 'Pause updates'
+    live.classList.toggle('paused', paused)
+    live.querySelector('span').textContent = paused ? 'Updates paused' : 'Updating live'
+    if (!paused) load()
+  })
+  document.getElementById('copy').addEventListener('click', function () {
+    (navigator.clipboard ? navigator.clipboard.writeText(VOTE_URL) : Promise.reject())
+      .then(function () { say('Voting link copied') })
+      .catch(function () { window.prompt('Copy the voting link', VOTE_URL) })
+  })
+  document.getElementById('open').addEventListener('click', function () { window.open(VOTE_URL, '_blank') })
+
+  document.addEventListener('mousemove', function (e) {
+    var row = e.target.closest && e.target.closest('.row')
+    if (!row) { tip.style.display = 'none'; return }
+    var v = row.dataset.variants
+    tip.innerHTML = '<b>' + esc(row.dataset.name) + '</b><br>' + row.dataset.votes + (row.dataset.votes === '1' ? ' vote' : ' votes') + ' · ' + row.dataset.share + ' of voters' +
+      (v ? '<br>Includes: ' + esc(v) : '')
+    tip.style.display = 'block'
+    var x = e.clientX + 14, y = e.clientY + 14
+    if (x + tip.offsetWidth > window.innerWidth - 8) x = e.clientX - tip.offsetWidth - 10
+    if (y + tip.offsetHeight > window.innerHeight - 8) y = e.clientY - tip.offsetHeight - 10
+    tip.style.left = x + 'px'; tip.style.top = y + 'px'
+  })
+
+  if (key) { history.replaceState(null, '', location.pathname); load().then(start) }
+  else gate.classList.remove('hidden')
+})()
+</script>
+</body>
+</html>

@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thornies Matric Dance 2026 · Vote</title>
+<meta name="description" content="Cast your anonymous vote for Prom King and Prom Queen.">
+<meta property="og:title" content="Thornies Matric Dance 2026 · Vote for Prom King & Queen">
+<meta property="og:description" content="One anonymous vote each. Takes ten seconds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F3EBE1;
+    --bg-2: #EAD9C6;
+    --card: #FFFCF8;
+    --ink: #3A2A1F;
+    --ink-2: #6F5A4B;
+    --muted: #A08B79;
+    --line: #E6D8C8;
+    --accent: #9C6B43;
+    --accent-dark: #7E5332;
+    --nude: #D9B493;
+    --gold: #C9A66B;
+    --ok-bg: #EEF2E6;
+    --ok-ink: #4F6235;
+    --err-bg: #F6E6E1;
+    --err-ink: #8A3F2C;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100dvh;
+    font-family: 'Jost', system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    background-image:
+      radial-gradient(900px 500px at 10% -10%, #FFF7EE 0%, transparent 60%),
+      radial-gradient(700px 500px at 100% 100%, var(--bg-2) 0%, transparent 60%);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 28px 16px 40px;
+  }
+  .wrap { width: 100%; max-width: 480px; }
+  header { text-align: center; margin: 12px 0 26px; }
+  .eyebrow {
+    font-size: 12px; letter-spacing: .22em; text-transform: uppercase; color: var(--accent);
+    font-weight: 600; margin-bottom: 10px;
+  }
+  h1 {
+    font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 600;
+    font-size: clamp(38px, 10vw, 48px); line-height: 1.02; margin: 0 0 10px; letter-spacing: -.01em;
+  }
+  h1 em { font-style: italic; color: var(--accent-dark); }
+  .lede { color: var(--ink-2); margin: 0; font-size: 15.5px; line-height: 1.5; }
+  .rule {
+    width: 72px; height: 1px; margin: 18px auto 0;
+    background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 22px;
+    padding: 22px 20px 20px; box-shadow: 0 18px 40px -28px rgba(58, 42, 31, .35);
+  }
+  .field { margin-bottom: 18px; }
+  label { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+  label .crown { width: 20px; height: 20px; flex: none; }
+  input[type=text] {
+    width: 100%; font: inherit; font-size: 17px; color: var(--ink);
+    padding: 14px 16px; border-radius: 14px; border: 1.5px solid var(--line); background: #fff;
+    outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  input[type=text]::placeholder { color: var(--muted); }
+  input[type=text]:focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(156, 107, 67, .14); }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  button.primary {
+    width: 100%; font: inherit; font-weight: 600; font-size: 16.5px; letter-spacing: .01em;
+    color: #FFF8F0; background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+    border: 0; border-radius: 14px; padding: 15px 18px; margin-top: 4px; cursor: pointer;
+    box-shadow: 0 10px 22px -12px rgba(126, 83, 50, .8);
+    transition: transform .1s, filter .15s;
+  }
+  button.primary:hover { filter: brightness(1.04); }
+  button.primary:active { transform: translateY(1px); }
+  button.primary[disabled] { opacity: .6; cursor: default; }
+  button.ghost {
+    font: inherit; font-weight: 500; font-size: 14.5px; color: var(--accent-dark);
+    background: transparent; border: 1.5px solid var(--line); border-radius: 12px; padding: 11px 16px; cursor: pointer;
+  }
+  button.ghost:hover { border-color: var(--nude); background: #FFF6EC; }
+  .msg { border-radius: 12px; padding: 11px 14px; font-size: 14.5px; margin-bottom: 14px; display: none; }
+  .msg.err { background: var(--err-bg); color: var(--err-ink); display: block; }
+  .msg.info { background: #F7EFE4; color: var(--ink-2); display: block; }
+  .privacy { display: flex; gap: 10px; align-items: flex-start; margin-top: 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.45; }
+  .privacy svg { flex: none; width: 18px; height: 18px; margin-top: 1px; }
+  .done { text-align: center; padding: 10px 4px 4px; }
+  .done .check {
+    width: 64px; height: 64px; border-radius: 50%; margin: 0 auto 14px;
+    background: linear-gradient(145deg, #FFF3E4, var(--nude)); display: grid; place-items: center;
+    border: 1px solid #E9CFB4;
+  }
+  .done h2 { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 600; font-size: 34px; margin: 0 0 6px; }
+  .done p { color: var(--ink-2); margin: 0 0 18px; }
+  .picks { display: grid; gap: 10px; margin: 6px 0 22px; text-align: left; }
+  .pick { display: flex; align-items: center; gap: 12px; background: #FBF4EB; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+  .pick .crown { width: 22px; height: 22px; flex: none; }
+  .pick small { display: block; font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .pick b { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 600; font-size: 22px; line-height: 1.1; }
+  .counter { text-align: center; color: var(--muted); font-size: 13px; margin-top: 18px; }
+  .hidden { display: none !important; }
+  footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Thornies · Matric Dance 2026</div>
+    <h1>Crown your <em>King</em> &amp; <em>Queen</em></h1>
+    <p class="lede">One anonymous vote each. Type the full name of the person you're voting for.</p>
+    <div class="rule"></div>
+  </header>
+
+  <div class="card">
+    <form id="form" novalidate>
+      <div id="msg" class="msg" role="alert"></div>
+      <div class="field">
+        <label for="king">
+          <svg class="crown" viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/></svg>
+          Prom King
+        </label>
+        <input id="king" name="king" type="text" autocomplete="off" autocapitalize="words" spellcheck="false" maxlength="60" placeholder="First name and surname" required>
+      </div>
+      <div class="field">
+        <label for="queen">
+          <svg class="crown" viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/><circle cx="12" cy="5" r="1.2" fill="#9C6B43" stroke="none"/></svg>
+          Prom Queen
+        </label>
+        <input id="queen" name="queen" type="text" autocomplete="off" autocapitalize="words" spellcheck="false" maxlength="60" placeholder="First name and surname" required>
+        <div class="hint">Spelling doesn't have to be perfect. Close matches are counted together.</div>
+      </div>
+      <button class="primary" id="submit" type="submit">Cast my vote</button>
+      <div class="privacy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        <span>Your vote is anonymous. We don't record who you are, only the two names you choose.</span>
+      </div>
+    </form>
+
+    <div id="done" class="done hidden">
+      <div class="check">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#7E5332" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+      </div>
+      <h2 id="doneTitle">Your vote is in</h2>
+      <p>Thank you. See you on the dance floor.</p>
+      <div class="picks">
+        <div class="pick">
+          <svg class="crown" viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/></svg>
+          <div><small>Prom King</small><b id="pickKing"></b></div>
+        </div>
+        <div class="pick">
+          <svg class="crown" viewBox="0 0 24 24" fill="none" stroke="#9C6B43" stroke-width="1.8" stroke-linejoin="round"><path d="M3 18h18M4 17l-1-9 5 4 4-6 4 6 5-4-1 9z"/><circle cx="12" cy="5" r="1.2" fill="#9C6B43" stroke="none"/></svg>
+          <div><small>Prom Queen</small><b id="pickQueen"></b></div>
+        </div>
+      </div>
+      <button class="ghost" id="change" type="button">Change my vote</button>
+    </div>
+
+    <div id="closed" class="done hidden">
+      <h2>Voting has closed</h2>
+      <p>Thanks to everyone who voted. The winners will be announced at the dance.</p>
+    </div>
+  </div>
+
+  <div class="counter" id="counter"></div>
+  <footer>Thornies Matric Dance 2026</footer>
+</div>
+
+<script>
+(function () {
+  var KEY = 'thornies-prom-2026'
+  var form = document.getElementById('form')
+  var done = document.getElementById('done')
+  var closed = document.getElementById('closed')
+  var msg = document.getElementById('msg')
+  var submit = document.getElementById('submit')
+  var counter = document.getElementById('counter')
+
+  function load() { try { return JSON.parse(localStorage.getItem(KEY) || 'null') } catch (e) { return null } }
+  function save(v) { try { localStorage.setItem(KEY, JSON.stringify(v)) } catch (e) {} }
+  function token() {
+    var s = load()
+    if (s && s.token) return s.token
+    var t = ''
+    var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    var bytes = new Uint8Array(32)
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes)
+    else for (var i = 0; i < 32; i++) bytes[i] = Math.floor(Math.random() * 256)
+    for (var j = 0; j < 32; j++) t += alphabet[bytes[j] % alphabet.length]
+    save({ token: t })
+    return t
+  }
+
+  function show(which) {
+    form.classList.toggle('hidden', which !== 'form')
+    done.classList.toggle('hidden', which !== 'done')
+    closed.classList.toggle('hidden', which !== 'closed')
+  }
+  function note(kind, text) { msg.className = 'msg ' + (kind || ''); msg.textContent = text || '' }
+  function plural(n) { return n + (n === 1 ? ' vote' : ' votes') + ' cast so far' }
+
+  var saved = load()
+  if (saved && saved.king && saved.queen) {
+    document.getElementById('pickKing').textContent = saved.king
+    document.getElementById('pickQueen').textContent = saved.queen
+    show('done')
+  }
+
+  fetch('/api/prom/vote', { cache: 'no-store' }).then(function (r) { return r.json() }).then(function (s) {
+    if (s && s.open === false) { show('closed'); return }
+    if (s && typeof s.total === 'number' && s.total > 0) counter.textContent = plural(s.total)
+  }).catch(function () {})
+
+  document.getElementById('change').addEventListener('click', function () {
+    var s = load() || {}
+    document.getElementById('king').value = s.king || ''
+    document.getElementById('queen').value = s.queen || ''
+    note('info', 'Submitting again replaces your earlier vote. It still counts once.')
+    show('form')
+    document.getElementById('king').focus()
+  })
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault()
+    var king = document.getElementById('king').value.replace(/\s+/g, ' ').trim()
+    var queen = document.getElementById('queen').value.replace(/\s+/g, ' ').trim()
+    if (king.length < 2) { note('err', 'Enter a name for Prom King.'); document.getElementById('king').focus(); return }
+    if (queen.length < 2) { note('err', 'Enter a name for Prom Queen.'); document.getElementById('queen').focus(); return }
+    note('')
+    submit.disabled = true
+    submit.textContent = 'Sending…'
+    fetch('/api/prom/vote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ king: king, queen: queen, token: token() }),
+    }).then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j } }) })
+      .then(function (res) {
+        submit.disabled = false
+        submit.textContent = 'Cast my vote'
+        if (res.status === 403) { show('closed'); return }
+        if (res.status !== 200 || !res.body.ok) { note('err', (res.body && res.body.error) || 'Could not send your vote. Please try again.'); return }
+        var s = load() || {}
+        s.king = res.body.king; s.queen = res.body.queen; s.at = new Date().toISOString()
+        save(s)
+        document.getElementById('pickKing').textContent = res.body.king
+        document.getElementById('pickQueen').textContent = res.body.queen
+        document.getElementById('doneTitle').textContent = res.body.replaced ? 'Your vote is updated' : 'Your vote is in'
+        if (typeof res.body.total === 'number') counter.textContent = plural(res.body.total)
+        show('done')
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      })
+      .catch(function () {
+        submit.disabled = false
+        submit.textContent = 'Cast my vote'
+        note('err', 'No connection. Check your signal and try again.')
+      })
+  })
+})()
+</script>
+</body>
+</html>

@@ -15,18 +15,43 @@ ticket file frozen for five days.
 | `/founder` | Founder review feed. Opened with `?key=<SYNC_KEY>`; no Re:amaze login needed. |
 | `/feedback` | Customer feedback themes, praise, complaints, recommendations. |
 | `/api/health` | Unauthenticated. Says whether the database is wired up. |
+| `/vote` | Thornies Matric Dance 2026 voting page. Public; send this link to voters. |
+| `/matric-dance` | Live results board for the dance. Opened with `?key=<SYNC_KEY>`. |
 
 ## Environment variables
 
 | Name | Required | Notes |
 |---|---|---|
 | `POSTGRES_URL` | yes | Pooled connection string. Neon, Supabase and Vercel Postgres all work. |
-| `SYNC_KEY` | yes | Long random string. Gates `/founder` and `/api/founder`. |
+| `SYNC_KEY` | yes | Long random string. Gates `/founder`, `/api/founder` and the `/matric-dance` results board. |
+| `PROM_VOTING_CLOSED` | no | Set to `1` to stop accepting matric dance votes. The results board keeps working. |
 
 The board itself has no password. It is gated on the operator's own Re:amaze
 credentials, which the browser holds and every API route re-verifies against
 Re:amaze before touching the database. Revoking the Re:amaze token revokes
 dashboard access with it.
+
+## Matric dance voting
+
+Two pages, one table (`prom_votes`, created on first use like the others).
+
+- `/vote` is the link for voters. They type a name for Prom King and one for
+  Prom Queen. The vote is anonymous: no IP, user agent or identity is stored,
+  only the two names. The browser keeps a random token in `localStorage` so a
+  second submit from the same phone *replaces* the earlier vote instead of
+  adding one. It is a soft guard, not a login: a voter who clears site data
+  can vote again.
+- `/matric-dance?key=<SYNC_KEY>` is the organisers' board. It refreshes every
+  four seconds and shows both races, the current leader, and the vote count
+  per name. The key is moved out of the URL into `sessionStorage` on load, so
+  the address bar can be shared on screen.
+
+Names are matched tightly (`lib/names.js`): case, accents, punctuation and
+spacing are ignored; one or two typos are forgiven on longer names but first
+names must agree, so "Ava Naidoo" and "Eva Naidoo" stay separate; a lone first
+name folds into the only full name that starts with it. Every spelling a
+candidate absorbed is shown under their bar so the organiser can see exactly
+what was merged. Set `PROM_VOTING_CLOSED=1` to close voting.
 
 ## First run
 
