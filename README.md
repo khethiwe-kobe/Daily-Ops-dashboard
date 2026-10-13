@@ -97,3 +97,31 @@ fresh queue, so nothing worked on ever silently disappears.
   characters and can contain `$` and `.`. The validator allows up to 300 and a
   wider charset for exactly this reason.
 - Re:amaze reads use the `.io` domain; credential checks use `.com`.
+
+## Innaderm Ops dashboard (`/innaderm`)
+
+Fulfilment, inventory and reorder decisions for Innaderm, built to Calvin's
+12 October brief. Lives at `/innaderm` (static app in `public/innaderm`,
+API under `app/api/innaderm/*`), and is meant to be opened inside ClickUp as an
+Embed view: `next.config.mjs` sets `frame-ancestors` to allow `app.clickup.com`
+on those paths only.
+
+Access is by personal key. The first admin signs in with `INNADERM_ADMIN_KEY`
+and issues keys to everyone else from Settings (gear icon). A login mints a
+90-day session, so each person signs in once per device. Keys and sessions are
+stored hashed in Postgres (`inn_*` tables, created on first use).
+
+| Name | Required | Notes |
+|---|---|---|
+| `INNADERM_ADMIN_KEY` | yes | Long random string (12+ chars). Bootstrap admin key; shows in the key list once used. |
+| `INNADERM_SHOPIFY_TOKEN` | yes | Admin API token of a custom app on the Innaderm store with `read_orders`, `read_fulfillments`, `read_products`, `read_inventory`, `read_locations`. |
+| `INNADERM_SHOPIFY_STORE` | no | Defaults to `f4f3a5-ad.myshopify.com` (innaderm.com). |
+| `INNADERM_LOOP_TOKEN` | no | Loop Subscriptions admin API token (Loop admin > Settings > API Tokens). Without it renewals are estimated from recurring orders. |
+| `INNADERM_CLICKUP_TOKEN` | no | ClickUp personal API token. Shows open Founder Escalations / Ops Overview tasks. |
+
+Shopify history is synced into `inn_orders` (120-day backfill on first load,
+incremental afterwards) so changing the period never re-pulls Shopify. Stock
+counts, lead times and MOQs that no system holds are entered in Settings and
+audited in `inn_events`. `/api/innaderm/health` (unauthenticated) says which
+of the variables above are set and whether the database answers.
+`/innaderm?demo=1` renders the layout with sample data and no secrets.
