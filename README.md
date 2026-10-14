@@ -120,6 +120,7 @@ stored hashed in Postgres (`inn_*` tables, created on first use).
 | `INNADERM_SHOPIFY_TOKEN` | no* | Alternative to the two above: a permanent `shpat_` token from a legacy custom app made in the store admin before 2026. Takes precedence when set. |
 | `INNADERM_SHOPIFY_STORE` | no | Defaults to `f4f3a5-ad.myshopify.com` (innaderm.com). |
 | `INNADERM_LOOP_TOKEN` | no | Loop Subscriptions admin API token (Loop admin > Settings > API Tokens). Without it renewals are estimated from recurring orders. |
+| `INNADERM_CS_INGEST_KEY` | no | Shared secret for the support-Gmail Apps Script that feeds the Customer service tab. |
 | `INNADERM_CLICKUP_TOKEN` | no | ClickUp personal API token. Shows open Founder Escalations / Ops Overview tasks. |
 
 Shopify history is synced into `inn_orders` (120-day backfill on first load,
@@ -130,3 +131,22 @@ of the variables above are set (`shopifyAuth` names the Shopify method in use)
 and whether the database answers. *Shopify needs either the client ID + secret
 or the legacy token.
 `/innaderm?demo=1` renders the layout with sample data and no secrets.
+
+### Customer service tab (support Gmail)
+
+Innaderm support runs on Gmail, not Re:amaze. `scripts/innaderm-gmail-sync.gs`
+is a Google Apps Script that runs inside the support mailbox every 15 minutes
+and posts thread metadata to `/api/innaderm/cs/ingest` (bearer
+`INNADERM_CS_INGEST_KEY`): subject, message times and direction, the agent
+name found in each reply's sign-off, and the first 500 characters of the
+customer's first message (only used to pick the ticket type). Stored in
+`inn_cs_threads` / `inn_cs_messages`; no full bodies. First run backfills 90 days.
+
+Setup: set `INNADERM_CS_INGEST_KEY` in Vercel and redeploy; signed in as the
+support Gmail, paste the script into script.google.com, fill in the key, run
+`setup` once. The tab shows answered-within-target %, first and every-reply
+response time (per agent), tickets by type with spike flags, ageing buckets of
+tickets waiting on us, automation candidates, and chargeback / reaction risk.
+Ticket types are keyword rules in `lib/innaderm/cs.js`; after changing them,
+`POST /api/innaderm/cs/reclassify` (admin) re-sorts stored tickets.
+`/innaderm?demo=1&tab=cs` shows the tab with sample data.

@@ -8,6 +8,7 @@
   const LS_TOKEN = 'innaderm.token'
   const LS_DAYS = 'innaderm.days'
   const LS_THEME = 'innaderm.theme'
+  const LS_VIEW = 'innaderm.view'
   const PERIODS = [7, 14, 30, 60, 90]
   const SERIES = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)']
   const params = new URLSearchParams(location.search)
@@ -26,6 +27,10 @@
     drawer: false,
     keys: null,
     newKey: null,
+    view: params.get('tab') === 'cs' || (params.get('tab') !== 'ops' && safeGet(LS_VIEW) === 'cs') ? 'cs' : 'ops',
+    cs: null,
+    csLoading: false,
+    csError: null,
   }
 
   function safeGet(k) { try { return localStorage.getItem(k) } catch { return null } }
@@ -106,7 +111,7 @@
 
   async function boot() {
     applyTheme()
-    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); render(); return }
+    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); render(); return }
     if (state.token || document.cookie.includes('inn_session')) {
       try { state.me = await api('/auth/me') } catch { state.me = null }
     }
@@ -115,6 +120,7 @@
   }
 
   async function load() {
+    if (state.view === 'cs') return loadCs()
     if (DEMO) { state.data = demoData(); render(); return }
     state.loading = true; state.error = null; render()
     try {
@@ -364,7 +370,7 @@
     const app = $('#app')
     app.replaceChildren()
     if (!state.me) return app.append(loginView())
-    app.append(topBar(), mainView(), drawer())
+    app.append(topBar(), state.view === 'cs' ? csView() : mainView(), drawer())
   }
 
   function loginView() {
@@ -399,9 +405,21 @@
     else if (sh && !sh.configured) sync = h('span', { class: 'pill bad' }, h('i', { class: 'dot' }), 'Shopify not connected')
     else if (sh?.sync?.lastRunAt) sync = h('span', { class: 'pill', title: 'Click to refresh now', onclick: () => maybeSync(true), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Updated ${fmtTime(sh.sync.lastRunAt)}`)
     else sync = h('span', { class: 'pill' }, h('i', { class: 'dot' }), state.loading ? 'Loading…' : 'Live')
+    if (state.view === 'cs' && !DEMO) {
+      const c = state.cs
+      if (state.csLoading && !c) sync = h('span', { class: 'pill busy' }, h('i', { class: 'dot' }), 'Loading…')
+      else if (c && !c.connected) sync = h('span', { class: 'pill bad' }, h('i', { class: 'dot' }), 'Gmail not connected')
+      else if (c?.sync?.lastIngestAt) {
+        const stale = Date.now() - new Date(c.sync.lastIngestAt).getTime() > 60 * 60e3
+        sync = h('span', { class: 'pill' + (stale ? ' warn' : ''), title: stale ? 'No sync for over an hour: check the Apps Script executions' : 'Click to refresh', onclick: loadCs, style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(c.sync.lastIngestAt)}`)
+      }
+    }
+    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'cs' ? !state.cs : !state.data) load(); else render() }
+    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'Customer service']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
     return h('header', { class: 'top' }, h('div', { class: 'top-in' },
       h('div', { class: 'brand' }, h('div', { class: 'mark', text: 'IN' }), h('div', null, h('span', { class: 'name', text: 'Innaderm' }), h('span', { class: 'sub', text: ' Ops' }))),
-      h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); load() } }))),
+      tabs,
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
       sync,
       h('div', { class: 'user' },
         h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: state.me.role })),
@@ -661,8 +679,8 @@
   function closeDrawer() { state.drawer = false; render() }
   function drawer() {
     if (!state.drawer || state.me.role !== 'admin') return h('div')
-    const S = state.data?.settings || {}
-    const meta = state.data?.settingsMeta || {}
+    const S = state.data?.settings || state.cs?.settings || {}
+    const meta = state.data?.settingsMeta || state.cs?.settingsMeta || {}
     const form = {}
     const F = (key, label, help, type = 'number', opts) => {
       let input
@@ -675,15 +693,15 @@
     const msg = h('div', { class: 'msg' })
     const save = async () => {
       const patch = {}
-      for (const [k, el] of Object.entries(form)) patch[k] = el.value === '' ? null : el.tagName === 'SELECT' ? el.value : Number(el.value)
+      for (const [k, el] of Object.entries(form)) patch[k] = el.value === '' ? null : el.tagName === 'SELECT' || el.type !== 'number' ? el.value : Number(el.value)
       if (patch.finished_on_hand != null) patch.finished_counted_at = new Date().toISOString()
       if (patch.packaging_on_hand != null && patch.packaging_on_hand !== S.packaging_on_hand) patch.packaging_counted_at = new Date().toISOString()
       msg.textContent = 'Saving…'
       try {
-        if (DEMO) { Object.assign(state.data.settings, patch); msg.textContent = 'Saved (demo, not persisted)'; render(); return }
+        if (DEMO) { Object.assign(S, patch); msg.textContent = 'Saved (demo, not persisted)'; render(); return }
         const r = await api('/settings', { method: 'PUT', body: patch })
         msg.textContent = r.errors?.length ? 'Saved with notes: ' + r.errors.join('; ') : 'Saved'
-        await load()
+        if (state.view === 'cs') { state.data = null; await loadCs() } else { state.cs = null; await load() }
         state.drawer = true; render()
       } catch (e) { msg.textContent = e.message }
     }
@@ -726,6 +744,12 @@
         F('baseline_days', 'Run-rate window (days)', 'new-order units per day are averaged over this window'),
         F('scale_pct', 'Scale % per day', 'Calvin: "we scale budgets by 20% per day"'),
         F('scale_days_default', 'Default scale days', 'where the slider starts')),
+      h('h3', { text: 'Customer service' }),
+      h('div', { class: 'form' },
+        F('cs_response_target_hours', 'Reply within (hours)', 'Calvin: "keep it under 24 hours"'),
+        F('dispute_rate_pct', 'Dispute rate (%)', 'from Shopify Payments; 0.9% on 12 Oct'),
+        F('dispute_threshold_pct', 'Hold threshold (%)', 'processor hold at 1%'),
+        F('dispute_rate_at', 'Dispute rate as of', 'date you read the rate', 'date')),
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Save inputs', onclick: save }), msg),
       h('h3', { text: 'Access keys' }),
       h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 8px', text: 'One key per person. Revoking a key signs that person out everywhere. The admin key from Vercel (INNADERM_ADMIN_KEY) is listed once it has been used.' }),
@@ -738,6 +762,231 @@
       h('h3', { text: 'Sources' }),
       h('p', { class: 'muted', style: 'font-size:12.5px', text: `Shopify store: ${state.data?.integrations.shopify.store}. Zendrop sheet id: ${S.zendrop_sheet_id}. ClickUp lists: ${(S.clickup_lists || []).map((l) => l.name).join(', ')}. Change these in Vercel env / the settings API.` }))
     return h('div', { class: 'drawer open' }, h('div', { class: 'scrim', onclick: closeDrawer }), panel)
+  }
+
+  // ---------- Customer service tab (support Gmail) ----------
+  // Calvin, 12 Oct: % of tickets by type, ageing buckets, average response
+  // time per agent, abnormal spikes, and which types to automate.
+  async function loadCs() {
+    if (DEMO) { state.cs = demoCs(); render(); return }
+    state.csLoading = true; state.csError = null; render()
+    try { state.cs = await api(`/cs?days=${state.days}`) } catch (e) { state.csError = e.message }
+    state.csLoading = false; render()
+  }
+
+  const hrsTxt = (v) => (v == null ? '–' : v < 1 ? Math.round(v * 60) + ' min' : hours(v))
+  const pctTxt = (v) => (v == null ? '–' : Math.round(v) + '%')
+  const FLAG_LABEL = { chargeback: 'Chargeback', legal: 'Legal / BBB', reaction: 'Reaction', angry: 'Angry' }
+  const AUTO_LABEL = { high: 'Automate', medium: 'Macro + check', low: 'Human', never: 'Never automate' }
+  function tag(text, cls = '') { return h('span', { class: 'tag ' + cls, text }) }
+  function ppDelta(cur, prev, upGood = false) {
+    if (prev == null || cur == null) return h('span', { class: 'muted', text: 'new' })
+    const d = Math.round(cur - prev)
+    return h('span', { class: d === 0 ? 'flat' : (d > 0) === upGood ? 'up' : 'down', text: d === 0 ? '±0 pts' : `${d > 0 ? '▲' : '▼'} ${Math.abs(d)} pts` })
+  }
+
+  // Vertical bars for a 24-hour profile, hover per bar.
+  function columnChart(values, labels, { color = 'var(--s1)', height = 160, name = 'Messages' } = {}) {
+    const W = 380, H = height, m = { t: 10, r: 6, b: 22, l: 28 }
+    const iw = W - m.l - m.r, ih = H - m.t - m.b, n = values.length
+    const max = Math.max(1, ...values) * 1.1
+    const bw = iw / n
+    const y = (v) => m.t + ih - (v / max) * ih
+    const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' })
+    const grid = s('g', { class: 'grid' }); const ax = s('g', { class: 'axis' })
+    niceTicks(max, 3).forEach((t) => { grid.append(s('line', { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t) })); ax.append(s('text', { x: m.l - 6, y: y(t) + 4, 'text-anchor': 'end', text: fmtCompact(t) })) })
+    svg.append(grid)
+    values.forEach((v, i) => {
+      const x = m.l + i * bw + 1, w = Math.max(1, bw - 2), top = y(v), hgt = m.t + ih - top
+      const r = Math.min(4, w / 2, hgt)
+      svg.append(s('path', { d: hgt <= 0 ? '' : `M${x},${m.t + ih}V${top + r}Q${x},${top} ${x + r},${top}H${x + w - r}Q${x + w},${top} ${x + w},${top + r}V${m.t + ih}Z`, fill: color }))
+      if (i % 6 === 0) ax.append(s('text', { x: x + w / 2, y: H - 6, 'text-anchor': 'middle', text: labels[i] }))
+      const hit = s('rect', { class: 'hit', x: m.l + i * bw, y: m.t, width: bw, height: ih })
+      hit.addEventListener('pointermove', (ev) => showTip(ev.clientX, ev.clientY, labels[i], [{ color, label: name, value: fmtInt(v) }]))
+      hit.addEventListener('pointerleave', hideTip)
+      svg.append(hit)
+    })
+    svg.append(s('line', { class: 'base', x1: m.l, x2: W - m.r, y1: y(0), y2: y(0) }))
+    svg.append(ax)
+    return svg
+  }
+
+  function csView() {
+    const wrap = h('div', { class: 'wrap' + (state.csLoading && state.cs ? ' fade' : '') })
+    if (state.csError) wrap.append(h('div', { class: 'banner bad' }, `Could not load: ${state.csError}`, h('button', { class: 'btn sm ghost', text: 'Retry', onclick: loadCs })))
+    const c = state.cs
+    if (!c) { if (!state.csError) wrap.append(h('div', { class: 'banner info', text: 'Loading customer service…' })); return wrap }
+    if (!c.connected) { wrap.append(csSetup(c)); return wrap }
+    const T = c.totals, target = c.target
+    const tz = c.timezone
+
+    // Headline
+    const headline = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Response time' }), h('span', { class: 'why', text: `Calvin's rule: every customer answered within ${target} hours. Slow replies turn into chargebacks.` })))
+    headline.append(h('div', { class: 'kpis' },
+      tile(`Answered within ${target} h`, pctTxt(T.withinTargetPct), null, T.withinTargetPctPrior != null ? h('div', { class: 'delta' }, ppDelta(T.withinTargetPct, T.withinTargetPctPrior, true), h('span', { class: 'muted', text: `vs prior ${state.days}d` })) : h('div', { class: 'delta' }, h('span', { class: 'muted', text: `${fmtInt(T.withinTargetOk)} of ${fmtInt(T.withinTargetJudged)} tickets` })), null),
+      tile('Avg first response', hrsTxt(T.avgFrtHours), null, T.avgFrtHoursPrior != null ? delta(T.avgFrtHours, T.avgFrtHoursPrior, { upGood: false }) : h('div', { class: 'delta' }, h('span', { class: 'muted', text: `median ${hrsTxt(T.medFrtHours)}` })), null),
+      tile('Avg response, every reply', hrsTxt(T.avgResponseHours), null, T.avgResponseHoursPrior != null ? delta(T.avgResponseHours, T.avgResponseHoursPrior, { upGood: false }) : h('div', { class: 'delta' }, h('span', { class: 'muted', text: `median ${hrsTxt(T.medResponseHours)}` })), null),
+      tile('Waiting for a reply now', fmtInt(T.awaiting), null, h('div', { class: 'delta' }, h('span', { class: T.overTarget ? 'down' : 'up', text: T.overTarget ? `${fmtInt(T.overTarget)} over ${target} h` : `none over ${target} h` })), null),
+      tile('New tickets', fmtInt(T.tickets), `${fmt1(T.perDay)}/day`, delta(T.tickets, T.ticketsPrior, { upGood: false }), sparkline(c.series.map((r) => r.tickets), SERIES[0]))))
+    headline.append(h('div', { class: 'kpis', style: 'margin-top:14px' },
+      mini('Solved in one reply', pctTxt(T.fcrPct), h('div', { class: 'delta' }, h('span', { class: 'muted', text: 'customer did not write again · target 60%' }))),
+      mini('Replies sent', fmtInt(T.replies), delta(T.replies, T.repliesPrior)),
+      mini('Repeat customers', fmtInt(T.repeatCustomers), h('div', { class: 'delta' }, h('span', { class: 'muted', text: `of ${fmtInt(T.uniqueCustomers)} wrote 2+ tickets` }))),
+      mini('Risk-flagged tickets', fmtInt(T.flagged), h('div', { class: 'delta' }, h('span', { class: T.flaggedWaiting ? 'down' : 'flat', text: T.flaggedWaiting ? `${fmtInt(T.flaggedWaiting)} still waiting` : 'none waiting' }))),
+      disputeMini(c.dispute)))
+    wrap.append(headline)
+
+    // What customers write about
+    const cats = c.categories
+    const topics = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'What customers write about' }), h('span', { class: 'why', text: 'Share of new tickets by type. A jump against the prior period is flagged.' })))
+    const tg = h('div', { class: 'grid' })
+    tg.append(chartCard('cs-cats', 'Tickets by type', `${fmtInt(T.tickets)} new tickets in ${state.days} days`, () => catBars(cats),
+      { span: 'c8', headers: ['Type', 'Tickets', 'Share', 'Prior share', 'Avg first reply', 'Automation'], rows: cats.map((x) => [x.name, fmtInt(x.count), pctTxt(x.share), pctTxt(x.priorShare), hrsTxt(x.avgFrtHours), AUTO_LABEL[x.auto] || '']) }))
+    const spikes = cats.filter((x) => x.spike)
+    tg.append(h('div', { class: 'card c4' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Abnormal spikes' }), h('div', { class: 'hint', text: 'Types up 5+ points and 1.5x their usual share; days over twice the normal spread' }))),
+      spikes.length || c.spikeDays.length
+        ? h('div', { class: 'list' },
+          spikes.map((x) => h('div', { class: 'it' }, h('span', null, h('b', { text: x.name }), ' ', h('span', { class: 'm', text: `${pctTxt(x.priorShare)} → ${pctTxt(x.share)} of tickets` })), tag('Spike', 'bad'))),
+          c.spikeDays.map((d2) => h('div', { class: 'it' }, h('span', null, h('b', { text: dayLabel(d2.day) }), ' ', h('span', { class: 'm', text: `${fmtInt(d2.tickets)} tickets (normal ≈ ${fmtInt(d2.normal)})` })), tag('Busy day', 'warn'))))
+        : h('p', { class: 'muted', text: 'Nothing abnormal in this period.' })))
+    topics.append(tg)
+    wrap.append(topics)
+
+    // Automation candidates
+    const autoRows = cats.filter((x) => x.auto === 'high' || x.auto === 'medium').slice(0, 6)
+    const weekly = (n) => (n / state.days) * 7
+    const autoTotal = autoRows.filter((x) => x.auto === 'high').reduce((a, x) => a + x.count, 0)
+    const autoSec = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'What to automate first' }), h('span', { class: 'why', text: `Biggest repeatable types. Fully automatable types are ${pctTxt(T.tickets ? (autoTotal / T.tickets) * 100 : null)} of tickets (≈${fmtInt(weekly(autoTotal))} a week).` })))
+    autoSec.append(h('div', { class: 'card' }, autoRows.length
+      ? h('table', { class: 'dtable' }, h('thead', null, h('tr', null, h('th', { text: 'Type' }), h('th', { text: 'Share' }), h('th', { text: 'Per week' }), h('th', { text: 'How' }), h('th', { text: 'Suggested move' }))),
+        h('tbody', null, autoRows.map((x) => h('tr', null, h('td', null, h('b', { text: x.name })), h('td', { text: pctTxt(x.share) }), h('td', { text: fmtInt(weekly(x.count)) }), h('td', null, tag(AUTO_LABEL[x.auto], x.auto === 'high' ? 'good' : 'warn')), h('td', { class: 'logic', text: x.play })))))
+      : h('p', { class: 'muted', text: 'Not enough tickets yet.' })))
+    wrap.append(autoSec)
+
+    // Backlog & ageing
+    const back = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Backlog & ageing' }), h('span', { class: 'why', text: 'Tickets where the customer wrote last and nobody has replied. Archiving in Gmail takes a ticket off this list.' })))
+    const bg = h('div', { class: 'grid' })
+    bg.append(h('div', { class: 'card c4' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Waiting by age' }), h('div', { class: 'hint', text: `${fmtInt(T.awaiting)} tickets waiting · time since the customer last wrote` }))),
+      hbars(Object.entries(c.ageing).map(([k, v], i) => ({ label: k, value: v, color: i === 0 ? SERIES[0] : 'var(--s4)' })), { total: T.awaiting }),
+      h('div', { class: 'note', style: 'margin-top:10px;font-size:12px', text: 'Blue is inside the 24-hour rule; red is over it.' })))
+    bg.append(h('div', { class: 'card c8' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Oldest waiting' }), h('div', { class: 'hint', text: 'Answer these first. Opens the thread in Gmail.' }))),
+      c.oldest.length ? h('div', { class: 'list', style: 'max-height:340px;overflow:auto' }, c.oldest.map((t) => h('div', { class: 'it' },
+        h('span', null, h('a', { href: t.link, target: '_blank', rel: 'noopener', text: t.subject }), ' ', h('span', { class: 'm', text: `${t.category}${t.customer ? ' · ' + t.customer : ''}${t.followUps ? ` · ${t.followUps} follow-up${t.followUps > 1 ? 's' : ''}` : ''}` }), ' ', (t.flags || []).map((f) => tag(FLAG_LABEL[f] || f, 'bad'))),
+        h('span', { class: 'age' + (t.waitingHours > target ? ' bad' : ''), text: hrsTxt(t.waitingHours) }))))
+        : h('p', { class: 'muted', text: 'Inbox zero. Nobody is waiting.' })))
+    back.append(bg)
+    wrap.append(back)
+
+    // Team performance
+    const team = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Team & workload' }), h('span', { class: 'why', text: 'Who replied and how fast, taken from the name in each reply\'s sign-off.' })))
+    const pg = h('div', { class: 'grid' })
+    pg.append(chartCard('cs-flow', 'Tickets in, replies out', 'New tickets and replies sent per day', () => lineChart({
+      labels: c.series.map((r) => r.day),
+      series: [{ name: 'New tickets', values: c.series.map((r) => r.tickets), color: SERIES[0] }, { name: 'Replies sent', values: c.series.map((r) => r.replies), color: SERIES[1] }],
+    }), { span: 'c8', headers: ['Day', 'New tickets', 'Customer messages', 'Replies sent'], rows: c.series.map((r) => [dayLabel(r.day), fmtInt(r.tickets), fmtInt(r.customerMsgs), fmtInt(r.replies)]), legend: [{ name: 'New tickets', color: SERIES[0] }, { name: 'Replies sent', color: SERIES[1] }] }))
+    const fb = Object.entries(c.frtBuckets)
+    pg.append(h('div', { class: 'card c4' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'First reply speed' }), h('div', { class: 'hint', text: 'New tickets in the period, by time to first reply' }))),
+      hbars(fb.map(([k, v]) => ({ label: k, value: v, color: /24-48|48 h|No reply/.test(k) ? 'var(--s4)' : SERIES[0] })), { total: T.tickets })))
+    pg.append(h('div', { class: 'card c8' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'By agent' }), h('div', { class: 'hint', text: 'Unattributed = replies with no agent name in the sign-off' }))),
+      c.agents.length ? h('div', { style: 'overflow:auto' }, tableView(['Agent', 'Replies', 'Avg response', 'Median', 'First replies', 'Avg first reply', `Within ${target} h`],
+        c.agents.map((a) => [a.agent, fmtInt(a.replies), hrsTxt(a.avgResponseHours), hrsTxt(a.medResponseHours), fmtInt(a.firstReplies), hrsTxt(a.avgFrtHours), pctTxt(a.withinTargetPct)])))
+        : h('p', { class: 'muted', text: 'No replies in this period.' })))
+    const hourLabels = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00')
+    pg.append(chartCard('cs-hours', 'When customers write', `Customer messages by hour, ${tz.replace('_', ' ')} time`, () => columnChart(c.byHour, hourLabels, { color: SERIES[2], name: 'Customer messages', height: 190 }),
+      { span: 'c4', headers: ['Hour', 'Messages'], rows: c.byHour.map((v, i) => [hourLabels[i], fmtInt(v)]) }))
+    team.append(pg)
+    wrap.append(team)
+
+    // Risk
+    const risk = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Dispute risk' }), h('span', { class: 'why', text: 'Tickets mentioning a chargeback, the bank, the BBB, a lawyer or a skin/stomach reaction. These go to Calvin the same day.' })))
+    risk.append(h('div', { class: 'card' }, c.risk.length ? h('div', { class: 'list' }, c.risk.map((r) => h('div', { class: 'it' },
+      h('span', null, h('a', { href: r.link, target: '_blank', rel: 'noopener', text: r.subject }), ' ', h('span', { class: 'm', text: `${r.category}${r.customer ? ' · ' + r.customer : ''} · ${fmtDate(r.at)}` }), ' ', r.flags.map((f) => tag(FLAG_LABEL[f] || f, 'bad'))),
+      r.waiting ? tag('Waiting', 'bad') : tag('Replied', 'good'))))
+      : h('p', { class: 'muted', text: 'No risk-flagged tickets in this period.' })))
+    wrap.append(risk)
+
+    wrap.append(h('footer', { class: 'foot' },
+      h('span', { text: c.sync?.lastIngestAt ? `Gmail synced ${fmtDateLong(c.sync.lastIngestAt)} ${fmtTime(c.sync.lastIngestAt)}` : 'Gmail not synced yet' }),
+      c.sync?.mailbox ? h('span', { text: `Inbox: ${c.sync.mailbox}` }) : null,
+      h('span', { text: `${fmtInt(c.totalThreads)} tickets stored${c.sync?.backfillDone ? '' : ' · history still loading'}` }),
+      h('span', { text: 'Ticket types are matched from the subject and the customer\'s first message.' })))
+    return wrap
+  }
+
+  function catBars(cats) {
+    const max = Math.max(1, ...cats.map((x) => x.count))
+    return h('div', { class: 'hbars cat' }, cats.map((x) => {
+      const el = h('div', { class: 'hbar' },
+        h('span', { class: 'n', text: x.name, title: x.name }),
+        h('div', { class: 'track' }, h('div', { class: 'fill', style: `width:${(x.count / max) * 100}%;background:${x.auto === 'never' ? 'var(--s4)' : SERIES[0]}` })),
+        h('span', { class: 'v', text: pctTxt(x.share) }),
+        h('span', { class: 'dd' }, ppDelta(x.share, x.priorShare)),
+        h('span', { class: 'sp' }, x.spike ? tag('Spike', 'bad') : null))
+      el.addEventListener('pointermove', (ev) => showTip(ev.clientX, ev.clientY, x.name, [{ color: x.auto === 'never' ? 'var(--s4)' : SERIES[0], label: 'Tickets', value: fmtInt(x.count) }, { color: 'transparent', label: 'Share now / before', value: `${pctTxt(x.share)} / ${pctTxt(x.priorShare)}` }, { color: 'transparent', label: 'Avg first reply', value: hrsTxt(x.avgFrtHours) }]))
+      el.addEventListener('pointerleave', hideTip)
+      return el
+    }))
+  }
+
+  function disputeMini(dp) {
+    if (!dp || dp.ratePct == null) return mini('Dispute rate', '–', h('div', { class: 'delta' }, h('span', { class: 'muted', text: 'enter it in Settings' })))
+    const room = dp.thresholdPct - dp.ratePct
+    const cls = room <= 0 ? 'down' : room <= 0.2 ? 'down' : 'flat'
+    return mini('Dispute rate', `${fmt1(dp.ratePct)}%`, h('div', { class: 'delta' }, h('span', { class: cls, text: room <= 0 ? `at the ${fmt1(dp.thresholdPct)}% hold line` : `${fmt1(room)} pts under the ${fmt1(dp.thresholdPct)}% hold` }), dp.at ? h('span', { class: 'muted', text: `as of ${fmtDate(dp.at)}` }) : null))
+  }
+
+  function csSetup(c) {
+    const isAdmin = state.me?.role === 'admin'
+    return h('section', { class: 'section' }, h('div', { class: 'setup' },
+      h('h3', { text: 'Connect the support Gmail' }),
+      h('p', { text: 'Innaderm support runs on Gmail, so a small Google script inside the support inbox sends ticket timings, subjects and agent names here every 15 minutes. No full emails are stored.' }),
+      isAdmin ? h('ol', { style: 'margin:10px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2);display:grid;gap:4px' },
+        h('li', null, 'In Vercel, add ', h('code', null, 'INNADERM_CS_INGEST_KEY'), ' (a long random string) and redeploy.'),
+        h('li', null, 'Signed in as the support Gmail, open script.google.com → New project, paste ', h('code', null, 'scripts/innaderm-gmail-sync.gs'), ' from the repo, and fill in the key.'),
+        h('li', null, 'Run ', h('code', null, 'setup'), ' once and approve the Gmail permission. The last 90 days load within the hour.')) : h('p', { text: 'Ask Khethiwe to finish the Gmail connection.' }),
+      h('p', { style: 'margin-top:10px' }, h('a', { href: '?demo=1', text: 'Preview this tab with sample data' }))))
+  }
+
+  function demoCs() {
+    const days = state.days
+    let seed = 11
+    const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280
+    const series = []
+    for (let i = days - 1; i >= 0; i--) {
+      const t = Math.round(24 + rnd() * 14 + (i === Math.min(4, days - 1) ? 22 : 0))
+      series.push({ day: new Date(Date.now() - i * 86400e3).toISOString().slice(0, 10), tickets: t, customerMsgs: Math.round(t * 1.6), replies: Math.round(t * 1.5 + rnd() * 6) })
+    }
+    const tickets = series.reduce((a, r) => a + r.tickets, 0)
+    const mix = [['Where is my order', 31, 24, 'high', 'Auto-reply with live tracking from Shopify and the delivery window. Biggest automation win if high.', 9.2],
+      ['Subscription', 17, 15, 'high', 'Auto-reply with the Loop self-serve link (pause, skip, swap, cancel) and the retention offer.', 7.4],
+      ['Refund / return', 12, 11, 'medium', 'Macro with the 90-day guarantee terms; refund itself stays with a person.', 11.8],
+      ['Product question', 10, 12, 'high', 'FAQ auto-reply: how to take it, ingredients, timeline to results, safe with other meds (with a disclaimer).', 6.1],
+      ['Not working / results', 8, 9, 'low', 'Retention reply: consistency and the 90-day timeline, then the guarantee. Personal tone.', 14.5],
+      ['Cancel order', 7, 8, 'medium', 'Auto-check fulfilment status: unfulfilled = cancel form, shipped = explain and offer return path.', 5.3],
+      ['Marked delivered, not received', 5, 6, 'medium', 'Macro asking neighbours/mailbox check, then request proof of delivery from the carrier.', 10.2],
+      ['Billing / payment', 4, 5, 'medium', 'Macro explaining the charge with the order lookup; double charges go to a person.', 8.8],
+      ['Adverse reaction', 2, 2, 'never', 'Escalate the same day with photos. Personal reply only.', 3.1],
+      ['Chargeback / dispute threat', 2, 1, 'never', 'Escalate to the Founder the same day. Never automate.', 2.4],
+      ['Other', 2, 7, 'low', 'Read a sample weekly; new patterns become a category.', 12.0]]
+    const categories = mix.map(([name, share, prior, auto, play, frt]) => ({ name, count: Math.round((tickets * share) / 100), prior: Math.round((tickets * prior) / 100), share, priorShare: prior, spike: share - prior >= 5 && share >= prior * 1.5, auto, play, avgFrtHours: frt }))
+    const subj = [['Where is my order #IN2291?', 'Where is my order', []], ['Charged twice this month', 'Subscription', ['angry']], ['Tracking hasn’t moved in 9 days', 'Where is my order', []], ['Opening a dispute with my bank', 'Chargeback / dispute threat', ['chargeback']], ['Rash after week 2', 'Adverse reaction', ['reaction']], ['How many capsules a day?', 'Product question', []], ['Cancel my subscription please', 'Subscription', []], ['Says delivered but nothing here', 'Marked delivered, not received', []]]
+    const oldest = subj.map(([subject, category, flags], i) => ({ id: 'demo' + i, subject, category, flags, customer: ['j****@gmail.com', 'm***@yahoo.com', 'r*****@icloud.com'][i % 3], waitingHours: [52, 37, 30, 26, 19, 9, 4, 1.5][i], followUps: [2, 1, 1, 0, 0, 0, 0, 0][i], link: 'https://mail.google.com' }))
+    return {
+      connected: true, days, target: 24, timezone: 'Africa/Johannesburg',
+      sync: { lastIngestAt: new Date().toISOString(), mailbox: 'support@innaderm.com', backfillDone: true },
+      totals: { tickets, ticketsPrior: Math.round(tickets * 0.88), perDay: tickets / days, perDayPrior: (tickets * 0.88) / days, avgFrtHours: 9.4, medFrtHours: 6.2, avgFrtHoursPrior: 12.8, avgResponseHours: 7.1, medResponseHours: 4.9, avgResponseHoursPrior: 8.3, withinTargetPct: 91, withinTargetOk: Math.round(tickets * 0.88), withinTargetJudged: Math.round(tickets * 0.97), withinTargetPctPrior: 84, awaiting: 23, overTarget: 4, replies: Math.round(tickets * 1.5), repliesPrior: Math.round(tickets * 1.32), fcrPct: 58, fcrPctPrior: 54, repeatCustomers: Math.round(tickets * 0.09), uniqueCustomers: Math.round(tickets * 0.86), flagged: 5, flaggedWaiting: 2 },
+      series, spikeDays: [{ day: series[Math.max(0, days - 5)].day, tickets: series[Math.max(0, days - 5)].tickets, normal: 30 }],
+      categories,
+      ageing: { '0-24 hours': 19, '1-7 days': 4, '7-14 days': 0, '14-90 days': 0, '90+ days': 0 }, ageingByCat: {},
+      oldest,
+      frtBuckets: { 'Under 1 h': Math.round(tickets * 0.18), '1-6 h': Math.round(tickets * 0.31), '6-24 h': Math.round(tickets * 0.39), '24-48 h': Math.round(tickets * 0.07), '48 h +': Math.round(tickets * 0.02), 'No reply yet': Math.round(tickets * 0.03) },
+      agents: [{ agent: 'Kashif', replies: Math.round(tickets * 0.9), avgResponseHours: 6.4, medResponseHours: 4.1, firstReplies: Math.round(tickets * 0.6), avgFrtHours: 8.7, withinTargetPct: 92 }, { agent: 'Khethiwe', replies: Math.round(tickets * 0.5), avgResponseHours: 8.2, medResponseHours: 5.6, firstReplies: Math.round(tickets * 0.33), avgFrtHours: 10.9, withinTargetPct: 89 }, { agent: 'Unattributed', replies: Math.round(tickets * 0.1), avgResponseHours: 9.0, medResponseHours: 7.5, firstReplies: Math.round(tickets * 0.04), avgFrtHours: 11.2, withinTargetPct: 85 }],
+      byHour: [3, 2, 2, 1, 1, 1, 2, 4, 6, 8, 9, 10, 12, 14, 18, 22, 25, 24, 21, 18, 14, 10, 7, 5].map((v) => Math.round((v * tickets) / 250)),
+      risk: oldest.filter((o) => o.flags.length).map((o, i) => ({ ...o, waiting: i < 2, at: new Date(Date.now() - o.waitingHours * 3600e3).toISOString() })),
+      dispute: { ratePct: 0.9, thresholdPct: 1, at: '2026-10-12' },
+      totalThreads: 2140,
+      settings: demoData().settings, settingsMeta: {},
+    }
   }
 
   // ---------- demo data (layout check without secrets: /innaderm?demo=1) ----------

@@ -1,5 +1,6 @@
 import { q, resolveConnection } from '../../../../lib/db'
-import { ensureInnaderm } from '../../../../lib/innaderm/db'
+import { ensureInnaderm, cacheGet } from '../../../../lib/innaderm/db'
+import { ensureCs } from '../../../../lib/innaderm/cs'
 import { authMode } from '../../../../lib/innaderm/shopify'
 
 export const runtime = 'nodejs'
@@ -21,14 +22,22 @@ export async function GET() {
       INNADERM_SHOPIFY_STORE: process.env.INNADERM_SHOPIFY_STORE || 'default (f4f3a5-ad.myshopify.com)',
       INNADERM_LOOP_TOKEN: !!process.env.INNADERM_LOOP_TOKEN,
       INNADERM_CLICKUP_TOKEN: !!process.env.INNADERM_CLICKUP_TOKEN,
+      INNADERM_CS_INGEST_KEY: !!process.env.INNADERM_CS_INGEST_KEY,
     },
     keys: null,
     orders: null,
+    csTickets: null,
+    csLastSync: null,
   }
   try {
     await ensureInnaderm()
     out.keys = Number((await q('SELECT COUNT(*)::int AS n FROM inn_access_keys WHERE revoked_at IS NULL'))[0].n)
     out.orders = Number((await q('SELECT COUNT(*)::int AS n FROM inn_orders'))[0].n)
+    try {
+      await ensureCs()
+      out.csTickets = Number((await q('SELECT COUNT(*)::int AS n FROM inn_cs_threads'))[0].n)
+      out.csLastSync = (await cacheGet('cs_ingest_state', 1e12))?.value?.lastIngestAt || null
+    } catch {}
     out.db = 'connected'
   } catch (e) {
     out.ok = false

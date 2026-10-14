@@ -261,3 +261,16 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .fade { opacity: .55; transition: opacity .2s; }
 footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
 @media print { .top, .drawer, .tooltip { display: none !important; } .card { break-inside: avoid; } }
+
+/* Customer service tab */
+.seg.tabs button { font-weight: 600; }
+.tag { display: inline-block; font-size: 11px; font-weight: 500; line-height: 1.5; padding: 0 7px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; vertical-align: 1px; }
+.tag.bad { background: var(--bad-bg); color: var(--bad); }
+.tag.warn { background: var(--warn-bg); color: var(--ink); }
+.tag.good { background: var(--good-bg); color: var(--good); }
+.hbars.cat .hbar { grid-template-columns: minmax(120px, 190px) 1fr 40px 70px 48px; }
+.hbars.cat .dd { font-size: 11.5px; text-align: right; white-space: nowrap; }
+.hbars.cat .dd .up { color: var(--good); } .hbars.cat .dd .down { color: var(--bad); } .hbars.cat .dd .flat { color: var(--muted); }
+.hbars.cat .sp { text-align: right; }
+@media (max-width: 600px) { .hbars.cat .hbar { grid-template-columns: 110px 1fr 36px 62px; } .hbars.cat .sp { display: none; } }
+.list .it .tag { margin-left: 4px; }
