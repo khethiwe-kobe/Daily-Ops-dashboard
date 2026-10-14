@@ -1,5 +1,6 @@
 import { q, resolveConnection } from '../../../../lib/db'
 import { ensureInnaderm } from '../../../../lib/innaderm/db'
+import { authMode } from '../../../../lib/innaderm/shopify'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,6 +15,9 @@ export async function GET() {
     env: {
       INNADERM_ADMIN_KEY: !!process.env.INNADERM_ADMIN_KEY,
       INNADERM_SHOPIFY_TOKEN: !!process.env.INNADERM_SHOPIFY_TOKEN,
+      INNADERM_SHOPIFY_CLIENT_ID: !!process.env.INNADERM_SHOPIFY_CLIENT_ID,
+      INNADERM_SHOPIFY_CLIENT_SECRET: !!process.env.INNADERM_SHOPIFY_CLIENT_SECRET,
+      shopifyAuth: authMode(),
       INNADERM_SHOPIFY_STORE: process.env.INNADERM_SHOPIFY_STORE || 'default (f4f3a5-ad.myshopify.com)',
       INNADERM_LOOP_TOKEN: !!process.env.INNADERM_LOOP_TOKEN,
       INNADERM_CLICKUP_TOKEN: !!process.env.INNADERM_CLICKUP_TOKEN,

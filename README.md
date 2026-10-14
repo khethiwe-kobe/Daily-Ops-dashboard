@@ -115,7 +115,9 @@ stored hashed in Postgres (`inn_*` tables, created on first use).
 | Name | Required | Notes |
 |---|---|---|
 | `INNADERM_ADMIN_KEY` | yes | Long random string (12+ chars). Bootstrap admin key; shows in the key list once used. |
-| `INNADERM_SHOPIFY_TOKEN` | yes | Admin API token of a custom app on the Innaderm store with `read_orders`, `read_fulfillments`, `read_products`, `read_inventory`, `read_locations`. |
+| `INNADERM_SHOPIFY_CLIENT_ID` | yes* | Client ID of a Shopify Dev Dashboard app installed on the Innaderm store with `read_orders`, `read_fulfillments`, `read_products`, `read_inventory`, `read_locations`. Access tokens are fetched with the client credentials grant (they last about 24h) and cached in `inn_cache`. |
+| `INNADERM_SHOPIFY_CLIENT_SECRET` | yes* | Client secret of the same app. |
+| `INNADERM_SHOPIFY_TOKEN` | no* | Alternative to the two above: a permanent `shpat_` token from a legacy custom app made in the store admin before 2026. Takes precedence when set. |
 | `INNADERM_SHOPIFY_STORE` | no | Defaults to `f4f3a5-ad.myshopify.com` (innaderm.com). |
 | `INNADERM_LOOP_TOKEN` | no | Loop Subscriptions admin API token (Loop admin > Settings > API Tokens). Without it renewals are estimated from recurring orders. |
 | `INNADERM_CLICKUP_TOKEN` | no | ClickUp personal API token. Shows open Founder Escalations / Ops Overview tasks. |
@@ -124,5 +126,7 @@ Shopify history is synced into `inn_orders` (120-day backfill on first load,
 incremental afterwards) so changing the period never re-pulls Shopify. Stock
 counts, lead times and MOQs that no system holds are entered in Settings and
 audited in `inn_events`. `/api/innaderm/health` (unauthenticated) says which
-of the variables above are set and whether the database answers.
+of the variables above are set (`shopifyAuth` names the Shopify method in use)
+and whether the database answers. *Shopify needs either the client ID + secret
+or the legacy token.
 `/innaderm?demo=1` renders the layout with sample data and no secrets.

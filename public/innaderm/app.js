@@ -456,7 +456,7 @@
   function setupBanners(d) {
     const box = h('div')
     const I = d.integrations
-    if (!I.shopify.configured) box.append(h('div', { class: 'banner bad' }, h('span', null, h('b', null, 'Shopify is not connected. '), 'Add ', h('code', null, 'INNADERM_SHOPIFY_TOKEN'), ' in Vercel (custom app, read orders / fulfillments / products / inventory) and redeploy. Until then the fulfilment, run-rate and stock panels stay empty.')))
+    if (!I.shopify.configured) box.append(h('div', { class: 'banner bad' }, h('span', null, h('b', null, 'Shopify is not connected. '), 'Add ', h('code', null, 'INNADERM_SHOPIFY_CLIENT_ID'), ' and ', h('code', null, 'INNADERM_SHOPIFY_CLIENT_SECRET'), ' in Vercel (Dev Dashboard app installed on the store, read orders / fulfillments / products / inventory / locations) and redeploy. Until then the fulfilment, run-rate and stock panels stay empty.')))
     if (I.shopify.configured && I.shopify.sync && !I.shopify.sync.backfilled) box.append(h('div', { class: 'banner' }, `Loading 120 days of Shopify history (${fmtInt(I.shopify.sync.orders || 0)} orders so far). Numbers firm up as it completes.`))
     if (I.shopify.error) box.append(h('div', { class: 'banner bad', text: `Shopify: ${I.shopify.error}` }))
     if (!I.loop.configured) box.append(h('div', { class: 'banner' }, h('span', null, h('b', null, 'Loop is not connected: '), 'committed renewals are estimated from recurring orders in the last 30 days. Add ', h('code', null, 'INNADERM_LOOP_TOKEN'), ' for exact renewal dates.')))
