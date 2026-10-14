@@ -12,6 +12,7 @@ ticket file frozen for five days.
 | URL | What it is |
 |---|---|
 | `/support-ops` | The board. Every ticket, one click from its Re:amaze chat. |
+| `/demo` | No-login demo of the board with sample data only (no real customer info, no credentials). Safe to share, e.g. to show the founder how it looks. |
 | `/founder` | Founder review feed. Opened with `?key=<SYNC_KEY>`; no Re:amaze login needed. |
 | `/feedback` | Customer feedback themes, praise, complaints, recommendations. |
 | `/api/health` | Unauthenticated. Says whether the database is wired up. |

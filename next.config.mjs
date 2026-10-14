@@ -5,6 +5,9 @@ const nextConfig = {
   async rewrites() {
     return [
       { source: '/support-ops', destination: '/support-ops.html' },
+      // No-login demo of the support board (sample data only) to show the founder.
+      { source: '/demo', destination: '/support-ops-demo.html' },
+      { source: '/support-ops-demo', destination: '/support-ops-demo.html' },
       { source: '/founder', destination: '/founder.html' },
       { source: '/feedback', destination: '/feedback.html' },
       // Thornies matric dance 2026: the voting link and the live results board.
