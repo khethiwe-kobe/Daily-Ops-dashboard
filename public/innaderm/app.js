@@ -798,6 +798,11 @@
   }
 
   // ---------- Customer service tab (support Gmail) ----------
+  // Customer address; when the full address is known it opens all their mail.
+  function customerEl(t) {
+    if (!t.customer) return null
+    return t.customerLink ? h('a', { class: 'cust', href: t.customerLink, target: '_blank', rel: 'noopener', title: 'All emails from this customer', text: t.customer }) : t.customer
+  }
   // Calvin, 12 Oct: % of tickets by type, ageing buckets, average response
   // time per agent, abnormal spikes, and which types to automate.
   async function loadCs() {
@@ -902,9 +907,9 @@
     bg.append(h('div', { class: 'card c4' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Waiting by age' }), h('div', { class: 'hint', text: `${fmtInt(T.awaiting)} tickets waiting · time since the customer last wrote` }))),
       hbars(Object.entries(c.ageing).map(([k, v], i) => ({ label: k, value: v, color: i === 0 ? SERIES[0] : 'var(--s4)' })), { total: T.awaiting }),
       h('div', { class: 'note', style: 'margin-top:10px;font-size:12px', text: 'Blue is inside the 24-hour rule; red is over it.' })))
-    bg.append(h('div', { class: 'card c8' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Oldest waiting' }), h('div', { class: 'hint', text: 'Answer these first. Opens the thread in Gmail.' }))),
+    bg.append(h('div', { class: 'card c8' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Oldest waiting' }), h('div', { class: 'hint', text: 'Answer these first. The subject opens the thread in Gmail; the address opens every email from that customer.' }))),
       c.oldest.length ? h('div', { class: 'list', style: 'max-height:340px;overflow:auto' }, c.oldest.map((t) => h('div', { class: 'it' },
-        h('span', null, h('a', { href: t.link, target: '_blank', rel: 'noopener', text: t.subject }), ' ', h('span', { class: 'm', text: `${t.category}${t.customer ? ' · ' + t.customer : ''}${t.followUps ? ` · ${t.followUps} follow-up${t.followUps > 1 ? 's' : ''}` : ''}` }), ' ', (t.flags || []).map((f) => tag(FLAG_LABEL[f] || f, 'bad'))),
+        h('span', null, h('a', { href: t.link, target: '_blank', rel: 'noopener', text: t.subject }), ' ', h('span', { class: 'm' }, t.category, t.customer ? ' · ' : null, customerEl(t), t.followUps ? ` · ${t.followUps} follow-up${t.followUps > 1 ? 's' : ''}` : null), ' ', (t.flags || []).map((f) => tag(FLAG_LABEL[f] || f, 'bad'))),
         h('span', { class: 'age' + (t.waitingHours > target ? ' bad' : ''), text: hrsTxt(t.waitingHours) }))))
         : h('p', { class: 'muted', text: 'Inbox zero. Nobody is waiting.' })))
     back.append(bg)
@@ -933,7 +938,7 @@
     // Risk
     const risk = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Dispute risk' }), h('span', { class: 'why', text: 'Tickets mentioning a chargeback, the bank, the BBB, a lawyer or a skin/stomach reaction. These go to Calvin the same day.' })))
     risk.append(h('div', { class: 'card' }, c.risk.length ? h('div', { class: 'list' }, c.risk.map((r) => h('div', { class: 'it' },
-      h('span', null, h('a', { href: r.link, target: '_blank', rel: 'noopener', text: r.subject }), ' ', h('span', { class: 'm', text: `${r.category}${r.customer ? ' · ' + r.customer : ''} · ${fmtDate(r.at)}` }), ' ', r.flags.map((f) => tag(FLAG_LABEL[f] || f, 'bad'))),
+      h('span', null, h('a', { href: r.link, target: '_blank', rel: 'noopener', text: r.subject }), ' ', h('span', { class: 'm' }, r.category, r.customer ? ' · ' : null, customerEl(r), ` · ${fmtDate(r.at)}`), ' ', r.flags.map((f) => tag(FLAG_LABEL[f] || f, 'bad'))),
       r.waiting ? tag('Waiting', 'bad') : tag('Replied', 'good'))))
       : h('p', { class: 'muted', text: 'No risk-flagged tickets in this period.' })))
     wrap.append(risk)

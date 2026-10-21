@@ -207,6 +207,8 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .list .it .m { color: var(--muted); font-size: 11.5px; }
 .list .it a { text-decoration: none; font-weight: 500; }
 .list .it a:hover { text-decoration: underline; }
+.list .it a.cust { font-weight: 400; text-decoration: underline dotted; text-underline-offset: 2px; }
+.list .it a.cust:hover { text-decoration: underline; color: var(--ink); }
 .list .it .age { font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
 .list .it .age.bad { color: var(--bad); font-weight: 500; }
 
