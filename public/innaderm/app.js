@@ -167,7 +167,9 @@
   // Daily demand curve for the next `horizon` days: committed renewals spread
   // over 30 days + new orders at run rate, which grow scale_pct/day for N days
   // (the ad-scaling scenario) and then hold at the scaled level.
-  function demandCurve(d, N, horizon = 365) {
+  const HORIZON = 365 // days the forecast looks ahead; cover at this value means "more than a year"
+  const MAX_SCALE = 14 // longest scale run checked
+  function demandCurve(d, N, horizon = HORIZON) {
     const S = d.settings
     const B = d.runRate?.newUnitsPerDay || 0
     const g = (S.scale_pct || 0) / 100
@@ -205,9 +207,15 @@
     const need30 = { committed: d.renewals?.units || 0, baseline: sum(base, 30) - (d.renewals?.units || 0), scaled: sum(curve, 30) - sum(base, 30) }
     need30.total = need30.committed + need30.baseline + need30.scaled
 
-    const coverF = daysOfCover(finished, curve)
-    const coverF0 = daysOfCover(finished, base)
-    const coverP = packaging == null || !perUnit ? null : daysOfCover(packaging / perUnit, curve)
+    // Units a day selling right now (new orders + renewals, no scaling). With
+    // no sales measured, cover is unknowable, not "a year": every figure that
+    // divides by demand is withheld instead of showing the horizon.
+    const sellPerDay = sum(base, 30) / 30
+    const noSales = !!d.runRate && !(sellPerDay > 0)
+    const coverF = noSales ? null : daysOfCover(finished, curve)
+    const coverF0 = noSales ? null : daysOfCover(finished, base)
+    const coverP = noSales || packaging == null || !perUnit ? null : daysOfCover(packaging / perUnit, curve)
+    const capped = coverF != null && coverF >= HORIZON
 
     // How much finished stock the next order should be: demand through the
     // lead time plus 30 days of cover and the safety buffer, less what is here.
@@ -223,31 +231,41 @@
     let orderPackaging = packaging == null ? null : Math.max(0, Math.ceil(orderFinished * perUnit + sum(curve, leadP ? leadP + safety : 30) * perUnit - packaging))
     if (orderPackaging != null && S.moq_packaging) orderPackaging = orderPackaging > 0 ? Math.max(S.moq_packaging, orderPackaging) : 0
 
-    const orderFinishedBy = coverF == null ? null : addDays(Math.floor(coverF - leadF - safety))
-    const orderPackagingBy = coverP == null || leadP == null ? null : addDays(Math.floor(coverP - leadP - safety))
+    // Past the horizon there is no reorder date to give, only "not this year".
+    const orderFinishedBy = coverF == null || capped ? null : addDays(Math.floor(coverF - leadF - safety))
+    const orderPackagingBy = coverP == null || coverP >= HORIZON || leadP == null ? null : addDays(Math.floor(coverP - leadP - safety))
 
-    // The one answer he will use.
+    // The one answer he will use: is stock selling out faster than a new
+    // batch can land?
+    const rate = `Selling ~${fmt1(sellPerDay)} units/day now.`
+    const restock = `${leadF}-day restock + ${safety}-day buffer`
     let verdict = 'unknown', reason = ''
     if (finished == null || !d.runRate) {
       reason = finished == null ? 'Finished-goods on hand is not known yet. Connect Shopify inventory or enter a count in Settings.' : 'No order history yet - the run rate is still syncing.'
+    } else if (noSales) {
+      reason = d.integrations?.shopify?.sync?.orders
+        ? `No sales in the last ${S.baseline_days} days, so there is no sell rate to measure stock against.`
+        : 'No sales history yet: Shopify orders have not synced, so there is no sell rate to measure stock against. Days of cover appears once orders load.'
     } else if (coverF0 < leadF + safety) {
       verdict = 'no'
-      reason = `Already short without scaling: current demand empties finished goods in ${fmt1(coverF0)} days, and a new batch takes ${leadF} days${packagingOk ? '' : ' because packaging is not on hand'}. Order now, do not scale.`
+      reason = `${rate} That is faster than we can restock: finished goods run out in ${fmt1(coverF0)} days without scaling, inside the ${restock}${packagingOk ? '' : ' (no packaging on hand)'}. Order now, do not scale.`
     } else if (coverF < leadF + safety) {
       verdict = 'no'
-      reason = `Scaling ${N} day${N === 1 ? '' : 's'} at ${S.scale_pct}%/day empties finished goods in ${fmt1(coverF)} days, inside the ${leadF}-day lead time (+${safety} safety). Stock would run out around ${fmtDate(addDays(coverF))}.`
+      reason = `${rate} Scaling ${N} day${N === 1 ? '' : 's'} at ${S.scale_pct}%/day empties finished goods in ${fmt1(coverF)} days, inside the ${restock}. Stock would run out around ${fmtDate(addDays(coverF))}.`
     } else {
       verdict = 'yes'
-      reason = `Under the ${N}-day scale, finished goods last ${fmt1(coverF)} days, ${fmt1(coverF - leadF - safety)} days past the ${leadF}-day lead time and safety buffer.${packagingOk ? '' : ' Packaging is the constraint: without it the lead time is ' + S.lead_finished_without_packaging + ' days.'}`
+      reason = `${rate} Under the ${N}-day scale, finished goods last ${capped ? 'more than a year' : fmt1(coverF) + ' days'}, ${capped ? 'well' : fmt1(coverF - leadF - safety) + ' days'} past the ${restock}.${packagingOk ? '' : ' Packaging is the constraint: without it the lead time is ' + S.lead_finished_without_packaging + ' days.'}`
     }
     // Largest N that still clears the lead time.
     let maxN = null
-    if (finished != null && d.runRate) {
+    if (finished != null && d.runRate && !noSales) {
       maxN = 0
-      for (let n = 0; n <= 14; n++) { if (daysOfCover(finished, demandCurve(d, n)) >= leadF + safety) maxN = n; else break }
+      for (let n = 0; n <= MAX_SCALE; n++) { if (daysOfCover(finished, demandCurve(d, n)) >= leadF + safety) maxN = n; else break }
     }
-    const stockout = coverF == null ? null : addDays(coverF)
-    return { curve, base, backlog, finished, finishedRaw, packaging, perUnit, safety, need30, coverF, coverF0, coverP, leadF, leadP, packagingOk, orderFinished, orderPackaging, orderFinishedBy, orderPackagingBy, verdict, reason, maxN, stockout }
+    const maxNLabel = maxN == null ? null : `${maxN}${maxN === MAX_SCALE ? '+' : ''} day${maxN === 1 ? '' : 's'}`
+    const stockout = coverF == null || capped ? null : addDays(coverF)
+    const coverLabel = coverF == null ? '–' : capped ? `${HORIZON}+` : fmt1(coverF)
+    return { curve, base, backlog, finished, finishedRaw, packaging, perUnit, safety, need30, sellPerDay, noSales, capped, coverLabel, coverF, coverF0, coverP, leadF, leadP, packagingOk, orderFinished, orderPackaging, orderFinishedBy, orderPackagingBy, verdict, reason, maxN, maxNLabel, stockout }
   }
 
   // ---------- charts ----------
@@ -460,15 +478,27 @@
 
   function decisionStrip(d, dec) {
     const chip = dec.verdict === 'yes' ? ['yes', 'YES'] : dec.verdict === 'no' ? ['no', 'NO'] : ['unknown', 'UNKNOWN']
-    const coverTxt = dec.coverF == null ? '–' : fmt1(dec.coverF)
+    const missing = dec.finished == null ? 'needs finished-goods count' : 'needs sales history'
+    const coverSub = dec.stockout ? `at ~${fmt1(dec.sellPerDay)}/day now · runs out ~${fmtDate(dec.stockout)} under this scenario`
+      : dec.capped ? `at ~${fmt1(dec.sellPerDay)}/day now · lasts beyond the 1-year forecast` : missing
+    const packSub = dec.orderPackagingBy ? inDays(dec.orderPackagingBy) : dec.leadP == null ? 'packaging lead time not set'
+      : dec.packaging == null ? 'packaging count not set' : dec.noSales ? 'needs sales history' : 'not needed within a year'
+    const finSub = dec.orderFinishedBy ? `${inDays(dec.orderFinishedBy)} · ${dec.leadF}-day lead` : dec.capped ? 'not needed within a year' : missing
+    // Which stock count the answer rests on and how old it is, so a stale
+    // count is visible before anyone acts on the verdict.
+    const fin = d.inventory.finished
+    const ageDays = fin.countedAt ? Math.floor((Date.now() - new Date(fin.countedAt)) / 86400e3) : null
+    const basis = dec.finishedRaw == null ? null
+      : `Based on ${fmtInt(dec.finishedRaw)} units on hand (${fin.source === 'shopify' ? 'Shopify inventory' : 'manual count'}${ageDays == null ? ', count date unknown' : ageDays === 0 ? ', counted today' : `, counted ${fmtDate(fin.countedAt)}`})${dec.backlog ? `, less ${fmtInt(dec.backlog)} owed to unfulfilled orders` : ''}.${ageDays != null && ageDays > 7 ? ` The count is ${ageDays} days old: recount before acting.` : ''}`
     return h('section', { class: 'section' }, h('div', { class: 'decision' },
       h('div', null,
         h('div', { class: 'q', text: `Can we scale ads right now? (${state.scaleDays}-day scale at ${d.settings.scale_pct}%/day)` }),
-        h('div', { class: 'verdict' }, h('span', { class: `chip ${chip[0]}`, text: chip[1] }), h('span', { text: dec.verdict === 'yes' ? 'Inventory can take it' : dec.verdict === 'no' ? 'Scaling now causes a stockout' : 'Inputs missing' })),
-        h('div', { class: 'reason', text: dec.reason + (dec.maxN != null && dec.verdict !== 'unknown' ? ` Longest safe scale: ${dec.maxN} day${dec.maxN === 1 ? '' : 's'}.` : '') })),
-      h('div', { class: 'mini' }, h('div', { class: 'l', text: 'Days of cover (finished goods)' }), h('div', { class: 'v hero', text: coverTxt }), h('div', { class: 's', text: dec.stockout ? `runs out ~${fmtDate(dec.stockout)} under this scenario` : 'needs stock count + run rate' })),
-      h('div', { class: 'mini' }, h('div', { class: 'l', text: 'Order packaging by' }), h('div', { class: 'v', text: dec.orderPackagingBy ? fmtDate(dec.orderPackagingBy) : '–' }), h('div', { class: 's', text: dec.orderPackagingBy ? inDays(dec.orderPackagingBy) : dec.leadP == null ? 'packaging lead time not set' : 'packaging count not set' })),
-      h('div', { class: 'mini' }, h('div', { class: 'l', text: 'Order finished goods by' }), h('div', { class: 'v', text: dec.orderFinishedBy ? fmtDate(dec.orderFinishedBy) : '–' }), h('div', { class: 's', text: dec.orderFinishedBy ? `${inDays(dec.orderFinishedBy)} · ${dec.leadF}-day lead` : 'needs finished-goods count' }))))
+        h('div', { class: 'verdict' }, h('span', { class: `chip ${chip[0]}`, text: chip[1] }), h('span', { text: dec.verdict === 'yes' ? 'Inventory can take it' : dec.verdict === 'no' ? 'Scaling now causes a stockout' : dec.noSales ? 'No sales data yet' : 'Inputs missing' })),
+        h('div', { class: 'reason', text: dec.reason + (dec.maxNLabel && dec.verdict !== 'unknown' ? ` Longest safe scale: ${dec.maxNLabel}.` : '') }),
+        basis ? h('div', { class: 'reason basis', text: basis }) : null),
+      h('div', { class: 'mini' }, h('div', { class: 'l', text: 'Days of cover (finished goods)' }), h('div', { class: 'v hero', text: dec.coverLabel }), h('div', { class: 's', text: coverSub })),
+      h('div', { class: 'mini' }, h('div', { class: 'l', text: 'Order packaging by' }), h('div', { class: 'v', text: dec.orderPackagingBy ? fmtDate(dec.orderPackagingBy) : '–' }), h('div', { class: 's', text: packSub })),
+      h('div', { class: 'mini' }, h('div', { class: 'l', text: 'Order finished goods by' }), h('div', { class: 'v', text: dec.orderFinishedBy ? fmtDate(dec.orderFinishedBy) : '–' }), h('div', { class: 's', text: finSub }))))
   }
 
   function setupBanners(d) {
@@ -557,7 +587,7 @@
       h('div', { class: `meter ${cls === 'na' ? '' : cls}` },
         h('div', { class: 'row' }, h('span', { text: 'vs 30-day need' }), h('span', { text: need30 ? `${fmtInt(need30)} needed` : 'need unknown' })),
         h('div', { class: 'track' }, h('div', { class: 'fill', style: `width:${ratio == null ? 0 : ratio * 100}%` }))),
-      h('div', { class: 'note' }, h('b', null, cover == null ? '–' : fmt1(cover) + ' days'), ' of cover under the current scenario', lead != null ? ` · lead time ${lead} d` : ' · lead time not set'),
+      h('div', { class: 'note' }, h('b', null, cover == null ? '–' : (cover >= HORIZON ? `${HORIZON}+` : fmt1(cover)) + ' days'), ' of cover under the current scenario', lead != null ? ` · lead time ${lead} d` : ' · lead time not set'),
       note ? h('div', { class: 'note', text: note }) : null)
   }
 
@@ -584,7 +614,7 @@
       h('div', { class: 'slider' }, slider, h('div', { class: 'n' }, String(state.scaleDays), h('small', { text: ' days' }))),
       h('div', { class: 'ticks' }, ['0', '3', '7', '10'].map((t) => h('span', { text: t }))),
       h('div', { class: 'note' }, 'Budgets scale ', h('b', null, `${S.scale_pct}% per day`), ' while ads hit KPI, then hold. Last breakthrough ran 3 days; "we could technically do 7, 10 days in a row."'),
-      dec.maxN != null ? h('div', { class: 'note' }, h('b', null, `Longest safe scale: ${dec.maxN} days`), ' before finished goods fall inside the lead time.') : null))
+      dec.maxN != null ? h('div', { class: 'note' }, h('b', null, `Longest safe scale: ${dec.maxNLabel}`), ' before finished goods fall inside the lead time.') : null))
     // Projection: cumulative demand vs stock, next 45 days
     const H = 45
     const labels = Array.from({ length: H }, (_, i) => new Date(Date.now() + (i + 1) * 86400e3).toISOString().slice(0, 10))
@@ -616,8 +646,8 @@
     const sec = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Reorder decision' }), h('span', { class: 'why', text: 'The automated suggestions. Everything above is input to this table.' })))
     const grid = h('div', { class: 'grid' })
     const rows = [
-      ['Days of cover remaining', dec.coverF == null ? '–' : `${fmt1(dec.coverF)} days`, `Finished goods on hand (${fmtInt(dec.finished)}${dec.backlog ? ', after ' + fmtInt(dec.backlog) + ' owed' : ''}) ÷ projected daily demand`, dec.coverF == null ? 'na' : dec.coverF < dec.leadF ? 'bad' : dec.coverF < dec.leadF + 14 ? 'warn' : 'good'],
-      ['Order packaging by', dec.orderPackagingBy ? fmtDateLong(dec.orderPackagingBy) : 'needs packaging count + lead time', `Days of cover (packaging${dec.coverP != null ? ': ' + fmt1(dec.coverP) + ' d' : ''}) minus packaging lead time${S.lead_packaging != null ? ' (' + S.lead_packaging + ' d)' : ' (not set)'} minus ${dec.safety} d safety`, dec.orderPackagingBy ? (dec.orderPackagingBy < new Date() ? 'bad' : (dec.orderPackagingBy - Date.now()) / 86400e3 < 7 ? 'warn' : 'good') : 'na'],
+      ['Days of cover remaining', dec.coverF == null ? (dec.noSales ? 'needs sales history' : '–') : `${dec.coverLabel} days`, `Finished goods on hand (${fmtInt(dec.finished)}${dec.backlog ? ', after ' + fmtInt(dec.backlog) + ' owed' : ''}) ÷ projected daily demand`, dec.coverF == null ? 'na' : dec.coverF < dec.leadF ? 'bad' : dec.coverF < dec.leadF + 14 ? 'warn' : 'good'],
+      ['Order packaging by', dec.orderPackagingBy ? fmtDateLong(dec.orderPackagingBy) : 'needs packaging count + lead time', `Days of cover (packaging${dec.coverP != null ? ': ' + (dec.coverP >= HORIZON ? `${HORIZON}+` : fmt1(dec.coverP)) + ' d' : ''}) minus packaging lead time${S.lead_packaging != null ? ' (' + S.lead_packaging + ' d)' : ' (not set)'} minus ${dec.safety} d safety`, dec.orderPackagingBy ? (dec.orderPackagingBy < new Date() ? 'bad' : (dec.orderPackagingBy - Date.now()) / 86400e3 < 7 ? 'warn' : 'good') : 'na'],
       ['Order finished goods by', dec.orderFinishedBy ? fmtDateLong(dec.orderFinishedBy) : 'needs finished-goods count', `Days of cover minus ${dec.leadF} days (${dec.packagingOk ? 'packaging on hand' : 'no packaging on hand, so the full ' + S.lead_finished_without_packaging + ' d'}) minus ${dec.safety} d safety`, dec.orderFinishedBy ? (dec.orderFinishedBy < new Date() ? 'bad' : (dec.orderFinishedBy - Date.now()) / 86400e3 < 7 ? 'warn' : 'good') : 'na'],
       ['Can we scale?', dec.verdict === 'yes' ? 'Yes' : dec.verdict === 'no' ? 'No' : 'Unknown', dec.reason, dec.verdict === 'yes' ? 'good' : dec.verdict === 'no' ? 'bad' : 'na'],
     ]
@@ -627,8 +657,8 @@
     // Suggestions
     const sug = []
     const daysTo = (dt) => Math.round((dt - Date.now()) / 86400e3)
-    if (dec.verdict === 'no') sug.push({ cls: 'bad', ic: '!', t: `Do not scale ${state.scaleDays} days right now.`, s: dec.maxN != null && dec.maxN > 0 ? `Up to ${dec.maxN} day${dec.maxN === 1 ? '' : 's'} is safe. Re-check after the next batch lands.` : 'Place the finished-goods order first.' })
-    if (dec.verdict === 'yes' && dec.maxN != null) sug.push({ cls: 'good', ic: '✓', t: `Scaling ${state.scaleDays} days is covered.`, s: `Longest safe run is ${dec.maxN} days. Beyond that, stock runs out before a reorder could land.` })
+    if (dec.verdict === 'no') sug.push({ cls: 'bad', ic: '!', t: `Do not scale ${state.scaleDays} days right now.`, s: dec.maxN != null && dec.maxN > 0 ? `Up to ${dec.maxNLabel} is safe. Re-check after the next batch lands.` : 'Place the finished-goods order first.' })
+    if (dec.verdict === 'yes' && dec.maxN != null) sug.push({ cls: 'good', ic: '✓', t: `Scaling ${state.scaleDays} days is covered.`, s: dec.maxN === MAX_SCALE ? `Stock covers at least ${MAX_SCALE} days of scaling.` : `Longest safe run is ${dec.maxNLabel}. Beyond that, stock runs out before a reorder could land.` })
     if (dec.orderFinished > 0 && dec.orderFinishedBy) sug.push({ cls: daysTo(dec.orderFinishedBy) <= 7 ? 'warn' : '', ic: 'F', t: `Order ${fmtInt(dec.orderFinished)} finished units by ${fmtDateLong(dec.orderFinishedBy)}${daysTo(dec.orderFinishedBy) < 0 ? ' (overdue)' : ''}.`, s: `Covers the ${dec.leadF}-day lead time plus 30 days plus ${dec.safety} days safety under the current scenario${S.moq_finished ? ', rounded up to the ' + fmtInt(S.moq_finished) + ' MOQ' : ''}${S.unit_cost_finished ? ' · ~' + fmtMoney(dec.orderFinished * S.unit_cost_finished) : ''}.` })
     if (dec.orderPackaging != null && dec.orderPackaging > 0) sug.push({ cls: dec.orderPackagingBy && daysTo(dec.orderPackagingBy) <= 7 ? 'warn' : '', ic: 'P', t: `Order ${fmtInt(dec.orderPackaging)} packaging units${dec.orderPackagingBy ? ' by ' + fmtDateLong(dec.orderPackagingBy) : ''}.`, s: `Enough for the next finished-goods batch plus packaging lead time${S.moq_packaging ? ', rounded up to the ' + fmtInt(S.moq_packaging) + ' MOQ' : ''}. Packaging on hand is what keeps the finished-goods lead time at ${S.lead_finished_with_packaging} days instead of ${S.lead_finished_without_packaging}.` })
     if (!dec.packagingOk && dec.packaging != null) sug.push({ cls: 'warn', ic: 'P', t: 'Packaging is below one month of demand.', s: `Until it is replenished the finished-goods lead time is ${S.lead_finished_without_packaging} days, not ${S.lead_finished_with_packaging}.` })
