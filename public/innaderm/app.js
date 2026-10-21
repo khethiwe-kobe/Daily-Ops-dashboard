@@ -243,9 +243,12 @@
     if (finished == null || !d.runRate) {
       reason = finished == null ? 'Finished-goods on hand is not known yet. Connect Shopify inventory or enter a count in Settings.' : 'No order history yet - the run rate is still syncing.'
     } else if (noSales) {
-      reason = d.integrations?.shopify?.sync?.orders
-        ? `No sales in the last ${S.baseline_days} days, so there is no sell rate to measure stock against.`
-        : 'No sales history yet: Shopify orders have not synced, so there is no sell rate to measure stock against. Days of cover appears once orders load.'
+      // Orders sync oldest first, so recent sales land last: until the
+      // backfill completes, zero demand means "still loading", not "no sales".
+      const sync = d.integrations?.shopify?.sync
+      reason = !sync?.backfilled
+        ? `Shopify orders are still loading${sync?.orders ? ` (${fmtInt(sync.orders)} so far, oldest first)` : ''}, so the last ${S.baseline_days} days of sales are not in yet. Days of cover appears once they are.`
+        : `No sales in the last ${S.baseline_days} days, so there is no sell rate to measure stock against.`
     } else if (coverF0 < leadF + safety) {
       verdict = 'no'
       reason = `${rate} That is faster than we can restock: finished goods run out in ${fmt1(coverF0)} days without scaling, inside the ${restock}${packagingOk ? '' : ' (no packaging on hand)'}. Order now, do not scale.`
