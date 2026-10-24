@@ -1,11 +1,15 @@
 /**
  * Innaderm support inbox -> Ops dashboard (Customer service tab).
  *
- * Runs inside the support Gmail account as a Google Apps Script. Every 15
- * minutes it reads threads with new activity and posts their metadata to the
- * dashboard: subject, who wrote each message and when, which agent signed each
- * reply, and the first 500 characters of the customer's first message (used
- * only to sort the ticket into a category). No attachments, no full bodies.
+ * Runs inside the support Gmail account as a Google Apps Script. Every 5
+ * minutes it:
+ *   - reads threads with new activity and posts them to the dashboard: subject,
+ *     the customer's name and address, who wrote each message and when, which
+ *     agent signed each reply, the start of the customer's first message (to
+ *     sort the ticket into a type) and their latest message (so the support
+ *     board can show it). No attachments.
+ *   - turns replies queued on the support board into Gmail drafts in the right
+ *     thread, so an agent only has to check and press Send.
  *
  * Setup (once, signed in to the support Gmail account):
  *   1. Go to https://script.google.com -> New project. Name it "Innaderm CS sync".
@@ -13,9 +17,12 @@
  *      and INGEST_KEY below (INGEST_KEY = the INNADERM_CS_INGEST_KEY value you
  *      set in Vercel).
  *   3. Pick "setup" in the function menu at the top and press Run. Approve the
- *      Gmail permission prompt. It installs the 15-minute trigger and starts
+ *      Gmail permission prompt. It installs the 5-minute trigger and starts
  *      the 90-day backfill, which finishes on its own over the next hour or so.
  *   4. View -> Executions shows each run and any errors.
+ *
+ * Updating an existing install (keeps the sync position): paste the new code
+ * over the old, keep your INGEST_KEY, then run "upgrade" once.
  */
 
 const DASHBOARD_URL = 'https://daily-ops-dashboard-eight.vercel.app'
@@ -36,7 +43,7 @@ const TIME_BUDGET_MS = 4.5 * 60e3
 function setup() {
   if (INGEST_KEY.indexOf('PASTE_') === 0) throw new Error('Fill in INGEST_KEY at the top of the script first.')
   ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'sync') ScriptApp.deleteTrigger(t) })
-  ScriptApp.newTrigger('sync').timeBased().everyMinutes(15).create()
+  ScriptApp.newTrigger('sync').timeBased().everyMinutes(5).create()
   const props = PropertiesService.getScriptProperties()
   props.deleteAllProperties()
   props.setProperty('backfillStart', '0')
@@ -44,8 +51,20 @@ function setup() {
   sync()
 }
 
+// Re-installs the trigger without restarting the backfill.
+function upgrade() {
+  if (INGEST_KEY.indexOf('PASTE_') === 0) throw new Error('Fill in INGEST_KEY at the top of the script first.')
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'sync') ScriptApp.deleteTrigger(t) })
+  ScriptApp.newTrigger('sync').timeBased().everyMinutes(5).create()
+  const props = PropertiesService.getScriptProperties()
+  // Re-send the last 3 days so open tickets pick up names and latest messages.
+  props.setProperty('lastRun', String(Math.floor((Date.now() - 3 * 86400e3) / 1000)))
+  sync()
+}
+
 function sync() {
   const started = Date.now()
+  makeDrafts()
   const props = PropertiesService.getScriptProperties()
   const me = Session.getEffectiveUser().getEmail().toLowerCase()
   const team = [me].concat(GmailApp.getAliases().map(function (a) { return a.toLowerCase() }))
@@ -59,7 +78,7 @@ function sync() {
     while (Date.now() - started < TIME_BUDGET_MS / 2) {
       const threads = GmailApp.search('-in:spam -in:trash -in:drafts after:' + since, start, 100)
       if (!threads.length) break
-      post(threads.map(function (t) { return pack(t, team) }).filter(Boolean), me, false)
+      post(threads.map(function (t) { return pack(t, team) }).filter(Boolean), me, false, false)
       if (threads.length < 100) break
       start += 100
     }
@@ -75,7 +94,7 @@ function sync() {
       const threads = GmailApp.search('-in:spam -in:trash -in:drafts after:' + since, start, 100)
       const packed = threads.map(function (t) { return pack(t, team) }).filter(Boolean)
       const done = threads.length < 100
-      post(packed, me, done)
+      post(packed, me, done, true)
       start += threads.length
       props.setProperty('backfillStart', done ? 'done' : String(start))
       if (done) break
@@ -85,7 +104,7 @@ function sync() {
 
 function pack(thread, team) {
   const messages = []
-  let customer = null, excerpt = '', hasCustomer = false
+  let customer = null, customerName = '', excerpt = '', lastExcerpt = '', hasCustomer = false
   thread.getMessages().forEach(function (m) {
     if (m.isDraft()) return
     const from = addr(m.getFrom())
@@ -96,26 +115,65 @@ function pack(thread, team) {
       msg.agent = agentOf(m.getPlainBody())
     } else {
       hasCustomer = true
-      if (!customer) { customer = from; excerpt = firstLines(m.getPlainBody()) }
+      const body = m.getPlainBody()
+      if (!customer) { customer = from; customerName = displayName(m.getFrom()); excerpt = firstLines(body) }
+      lastExcerpt = ownText(body).slice(0, 2000)
     }
     messages.push(msg)
   })
   if (!hasCustomer) return null
-  return { id: thread.getId(), subject: thread.getFirstMessageSubject(), inInbox: thread.isInInbox(), customer: customer, excerpt: excerpt, messages: messages }
+  return { id: thread.getId(), subject: thread.getFirstMessageSubject(), inInbox: thread.isInInbox(), customer: customer, customerName: customerName, excerpt: excerpt, lastExcerpt: lastExcerpt, messages: messages }
 }
 
-function post(threads, mailbox, backfillDone) {
+function post(threads, mailbox, backfillDone, backfill) {
   for (let i = 0; i < threads.length || (i === 0 && backfillDone); i += BATCH) {
     const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/ingest', {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + INGEST_KEY },
-      payload: JSON.stringify({ mailbox: mailbox, threads: threads.slice(i, i + BATCH), backfillDone: backfillDone && i + BATCH >= threads.length }),
+      payload: JSON.stringify({ mailbox: mailbox, threads: threads.slice(i, i + BATCH), backfill: !!backfill, backfillDone: backfillDone && i + BATCH >= threads.length }),
       muteHttpExceptions: true,
     })
     if (res.getResponseCode() !== 200) throw new Error('Dashboard said ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200))
     if (!threads.length) break
   }
+}
+
+// Replies queued on the support board become drafts in their Gmail thread,
+// addressed to the customer's latest message.
+function makeDrafts() {
+  const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts', { headers: { Authorization: 'Bearer ' + INGEST_KEY }, muteHttpExceptions: true })
+  if (res.getResponseCode() !== 200) return
+  const queue = JSON.parse(res.getContentText()).drafts || []
+  if (!queue.length) return
+  const me = Session.getEffectiveUser().getEmail().toLowerCase()
+  const team = [me].concat(GmailApp.getAliases().map(function (a) { return a.toLowerCase() }))
+  const results = queue.map(function (d) {
+    try {
+      const thread = GmailApp.getThreadById(d.threadId)
+      if (!thread) return { id: d.id, ok: false, error: 'thread not found' }
+      const msgs = thread.getMessages().filter(function (m) { return !m.isDraft() && team.indexOf(addr(m.getFrom())) === -1 })
+      if (!msgs.length) return { id: d.id, ok: false, error: 'no customer message in thread' }
+      const draft = msgs[msgs.length - 1].createDraftReply(d.body)
+      return { id: d.id, ok: true, draftId: draft.getId() }
+    } catch (e) {
+      return { id: d.id, ok: false, error: String(e && e.message || e) }
+    }
+  })
+  UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts', {
+    method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + INGEST_KEY },
+    payload: JSON.stringify({ results: results }), muteHttpExceptions: true,
+  })
+}
+
+function displayName(from) {
+  const m = String(from || '').match(/^\s*"?([^"<]*?)"?\s*</)
+  return m ? m[1].trim() : ''
+}
+
+// The customer's own words in a message: quoted history cut off.
+function ownText(body) {
+  return firstLinesRaw(body).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 function addr(from) {

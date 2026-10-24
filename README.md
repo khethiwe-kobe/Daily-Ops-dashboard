@@ -120,7 +120,7 @@ stored hashed in Postgres (`inn_*` tables, created on first use).
 | `INNADERM_SHOPIFY_TOKEN` | no* | Alternative to the two above: a permanent `shpat_` token from a legacy custom app made in the store admin before 2026. Takes precedence when set. |
 | `INNADERM_SHOPIFY_STORE` | no | Defaults to `f4f3a5-ad.myshopify.com` (innaderm.com). |
 | `INNADERM_LOOP_TOKEN` | no | Loop Subscriptions admin API token (Loop admin > Settings > API Tokens). Without it renewals are estimated from recurring orders. |
-| `INNADERM_CS_INGEST_KEY` | no | Shared secret for the support-Gmail Apps Script that feeds the Customer service tab. |
+| `INNADERM_CS_INGEST_KEY` | no | Shared secret for the support-Gmail Apps Script that feeds the CS metrics tab and the support board (and picks up Gmail drafts). |
 | `INNADERM_CLICKUP_TOKEN` | no | ClickUp personal API token. Shows open Founder Escalations / Ops Overview tasks. |
 
 Shopify history is synced into `inn_orders` (120-day backfill on first load,
@@ -150,3 +150,35 @@ tickets waiting on us, automation candidates, and chargeback / reaction risk.
 Ticket types are keyword rules in `lib/innaderm/cs.js`; after changing them,
 `POST /api/innaderm/cs/reclassify` (admin) re-sorts stored tickets.
 `/innaderm?demo=1&tab=cs` shows the tab with sample data.
+
+### Support board (work the Innaderm inbox)
+
+`/innaderm?tab=board`. The Serentia board's working view for the support Gmail.
+Every open ticket grouped by type, risky ones (dispute, legal, reaction) first,
+then oldest. Queues: Needs reply, They replied, With Calvin, Drafted, Waiting on
+customer, All open, Done. Each ticket shows the customer's latest message, their
+Shopify orders (by #INN number, else by email, live; VIP = 2+ orders or $100+),
+status, type correction, an internal note, and a reply composer.
+
+- **Replies** come from templates (`inn_cs_templates`, seeded from
+  `DEFAULT_TEMPLATES` in `lib/innaderm/csboard.js`, editable by admins on the
+  Templates tab). `{first_name}`, `{order_status}` (shipped / tracking /
+  delivered / not yet shipped, from Shopify), `{order_number}`,
+  `{order_or_ask}`, `{discount_code}`, `{agent}` fill in; `[CAPITALS]` must be
+  replaced by the agent. Signed with the agent's own name ("Signing as").
+- **Put in Gmail as draft** queues the reply (`inn_cs_drafts`); the Apps
+  Script (every 5 min) creates it as a draft reply in the thread, so the agent
+  checks it in Gmail and presses Send.
+- **Send to Calvin** creates a task in ClickUp Founder Escalations (assigned to
+  Calvin, tag `innaderm`, `innaderm-thread:` line, custom fields filled).
+  Status and Calvin's comments show back on the ticket. Needs
+  `INNADERM_CLICKUP_TOKEN`.
+- **Automations** tab: each ticket type moves Manual -> Approved template ->
+  Auto-drafted in Gmail -> (Auto-send, not yet). Auto-drafted types get a filled
+  draft queued as soon as a new customer message is ingested, using the type's
+  approved template; never for flagged tickets, adverse reactions or disputes,
+  and never while a `[PLACEHOLDER]` is left. Hours saved are estimated from
+  tickets per week x `cs_minutes_per_ticket` x the stage's saving share.
+
+Updating the Apps Script: paste the new `scripts/innaderm-gmail-sync.gs` over
+the old one (keep the key) and run `upgrade` once.

@@ -27,7 +27,10 @@
     drawer: false,
     keys: null,
     newKey: null,
-    view: params.get('tab') === 'cs' || (params.get('tab') !== 'ops' && safeGet(LS_VIEW) === 'cs') ? 'cs' : 'ops',
+    view: ['ops', 'cs', 'board'].includes(params.get('tab')) ? params.get('tab') : ['cs', 'board'].includes(safeGet(LS_VIEW)) ? safeGet(LS_VIEW) : 'ops',
+    board: null,
+    boardLoading: false,
+    boardError: null,
     cs: null,
     csLoading: false,
     csError: null,
@@ -111,7 +114,7 @@
 
   async function boot() {
     applyTheme()
-    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); render(); return }
+    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); state.board = demoBoard(); render(); return }
     if (state.token || document.cookie.includes('inn_session')) {
       try { state.me = await api('/auth/me') } catch { state.me = null }
     }
@@ -121,6 +124,7 @@
 
   async function load() {
     if (state.view === 'cs') return loadCs()
+    if (state.view === 'board') return loadBoard()
     if (DEMO) { state.data = demoData(); render(); return }
     state.loading = true; state.error = null; render()
     try {
@@ -391,7 +395,7 @@
     const app = $('#app')
     app.replaceChildren()
     if (!state.me) return app.append(loginView())
-    app.append(topBar(), state.view === 'cs' ? csView() : mainView(), drawer())
+    app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : mainView(), drawer())
   }
 
   function loginView() {
@@ -435,12 +439,16 @@
         sync = h('span', { class: 'pill' + (stale ? ' warn' : ''), title: stale ? 'No sync for over an hour: check the Apps Script executions' : 'Click to refresh', onclick: loadCs, style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(c.sync.lastIngestAt)}`)
       }
     }
-    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'cs' ? !state.cs : !state.data) load(); else render() }
-    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'Customer service']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
+    if (state.view === 'board' && !DEMO) {
+      const at = state.board?.sync?.lastIngestAt
+      sync = at ? h('span', { class: 'pill', title: 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
+    }
+    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : !state.data) load(); else render() }
+    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
     return h('header', { class: 'top' }, h('div', { class: 'top-in' },
       h('div', { class: 'brand' }, h('div', { class: 'mark', text: 'IN' }), h('div', null, h('span', { class: 'name', text: 'Innaderm' }), h('span', { class: 'sub', text: ' Ops' }))),
       tabs,
-      h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
+      state.view === 'board' ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
       sync,
       h('div', { class: 'user' },
         h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: state.me.role })),
@@ -708,12 +716,12 @@
   }
 
   // ---------- settings drawer (admin) ----------
-  function openDrawer() { state.drawer = true; state.newKey = null; render(); if (!DEMO) api('/keys').then((r) => { state.keys = r.keys; render() }).catch(() => {}) }
+  function openDrawer() { state.drawer = true; state.newKey = null; if (!DEMO && !state.data && !state.cs && !state.boardSettings) api('/settings').then((r) => { state.boardSettings = r.settings; state.boardMeta = r.meta; render() }).catch(() => {}); if (DEMO && !state.data) state.data = demoData(); render(); if (!DEMO) api('/keys').then((r) => { state.keys = r.keys; render() }).catch(() => {}) }
   function closeDrawer() { state.drawer = false; render() }
   function drawer() {
     if (!state.drawer || state.me.role !== 'admin') return h('div')
-    const S = state.data?.settings || state.cs?.settings || {}
-    const meta = state.data?.settingsMeta || state.cs?.settingsMeta || {}
+    const S = state.data?.settings || state.cs?.settings || state.boardSettings || {}
+    const meta = state.data?.settingsMeta || state.cs?.settingsMeta || state.boardMeta || {}
     const form = {}
     const F = (key, label, help, type = 'number', opts) => {
       let input
@@ -734,7 +742,7 @@
         if (DEMO) { Object.assign(S, patch); msg.textContent = 'Saved (demo, not persisted)'; render(); return }
         const r = await api('/settings', { method: 'PUT', body: patch })
         msg.textContent = r.errors?.length ? 'Saved with notes: ' + r.errors.join('; ') : 'Saved'
-        if (state.view === 'cs') { state.data = null; await loadCs() } else { state.cs = null; await load() }
+        if (state.view === 'cs') { state.data = null; await loadCs() } else if (state.view === 'board') { const r = await api('/settings'); state.boardSettings = r.settings; state.boardMeta = r.meta; await loadBoard(true) } else { state.cs = null; await load() }
         state.drawer = true; render()
       } catch (e) { msg.textContent = e.message }
     }
@@ -783,6 +791,12 @@
         F('dispute_rate_pct', 'Dispute rate (%)', 'from Shopify Payments; 0.9% on 12 Oct'),
         F('dispute_threshold_pct', 'Hold threshold (%)', 'processor hold at 1%'),
         F('dispute_rate_at', 'Dispute rate as of', 'date you read the rate', 'date')),
+      h('h3', { text: 'Support board' }),
+      h('div', { class: 'form' },
+        F('cs_ship_eta_text', 'Ship date for unshipped orders', 'e.g. Friday 31 October. Blank = drafts ask the agent to confirm with Calvin', 'text'),
+        F('cs_discount_code', 'Discount code in replies', 'handover: WELCOME15', 'text'),
+        F('cs_minutes_per_ticket', 'Minutes per ticket', 'used for hours-saved estimates'),
+        F('cs_autodraft_signature', 'Auto-draft sign-off', 'name on drafts the system writes', 'text')),
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Save inputs', onclick: save }), msg),
       h('h3', { text: 'Access keys' }),
       h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 8px', text: 'One key per person. Revoking a key signs that person out everywhere. The admin key from Vercel (INNADERM_ADMIN_KEY) is listed once it has been used.' }),
@@ -1025,6 +1039,329 @@
       totalThreads: 2140,
       settings: demoData().settings, settingsMeta: {},
     }
+  }
+
+  // ---------- Support board (work the Innaderm inbox, like the Serentia board) ----------
+  const LS_SIGNER = 'innaderm.signer'
+  const QUEUES = [
+    ['reply', 'Needs reply', (t) => t.needsReply && t.status !== 'With Calvin'],
+    ['back', 'They replied', (t) => t.needsReply && (t.reopened || (t.msgsOut > 0 && t.statusSet))],
+    ['calvin', 'With Calvin', (t) => t.status === 'With Calvin'],
+    ['drafted', 'Drafted', (t) => t.status === 'Drafted'],
+    ['waiting', 'Waiting on customer', (t) => !t.needsReply && ['Replied', 'Waiting on customer', 'With Zendrop'].includes(t.status)],
+    ['open', 'All open', (t) => t.needsReply || !['Done', 'Skip'].includes(t.status)],
+    ['done', 'Done', (t) => ['Done', 'Skip'].includes(t.status) && !t.reopened],
+  ]
+  const STATUS_CLS = { New: '', Drafted: 'warn', Replied: 'good', 'Waiting on customer': '', 'With Calvin': 'bad', 'With Zendrop': 'warn', Done: 'good', Skip: '' }
+  const PLACEHOLDER_RE = /\[[A-Z][A-Z0-9 ,.:;'’()/&+-]{2,}\]/g
+
+  function signer() {
+    const saved = safeGet(LS_SIGNER)
+    if (saved) return saved
+    const n = String(state.me?.name || '').replace(/\(.*\)/, '').trim()
+    return /^admin$/i.test(n) ? '' : n.split(/\s+/)[0] || ''
+  }
+  const fillTpl = (body, vars) => String(body).replace(/\{(\w+)\}/g, (m, k) => (vars[k] != null && vars[k] !== '' ? vars[k] : m))
+
+  async function loadBoard(quiet) {
+    if (DEMO) { state.board = demoBoard(); render(); return }
+    if (!quiet) { state.boardLoading = true; state.boardError = null; render() }
+    try { state.board = await api('/cs/board') } catch (e) { state.boardError = e.message }
+    state.boardLoading = false; render()
+  }
+  // Refresh in the background unless someone is mid-edit.
+  setInterval(() => {
+    if (state.view !== 'board' || !state.me || document.hidden || DEMO) return
+    const a = document.activeElement
+    if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return
+    loadBoard(true)
+  }, 120e3)
+
+  async function saveTicket(t, patch) {
+    Object.assign(t, patch.status ? { status: patch.status, statusSet: true, reopened: false, needsReply: ['Done', 'Skip', 'Replied', 'Waiting on customer'].includes(patch.status) ? false : t.needsReply } : {}, patch.note !== undefined ? { note: patch.note } : {}, patch.category ? { category: patch.category } : {})
+    render()
+    if (DEMO) return
+    try { await api('/cs/board', { method: 'POST', body: { id: t.id, ...patch } }) } catch (e) { alert('Not saved: ' + e.message); loadBoard(true) }
+  }
+
+  function boardView() {
+    const wrap = h('div', { class: 'wrap board' + (state.boardLoading && state.board ? ' fade' : '') })
+    if (state.boardError) wrap.append(h('div', { class: 'banner bad' }, `Could not load: ${state.boardError}`, h('button', { class: 'btn sm ghost', text: 'Retry', onclick: () => loadBoard() })))
+    const b = state.board
+    if (!b) { if (!state.boardError) wrap.append(h('div', { class: 'banner info', text: 'Loading the support board…' })); return wrap }
+    const sub = state.boardSub || 'tickets'
+    wrap.append(h('div', { class: 'board-head' },
+      h('div', { class: 'seg', role: 'tablist' }, [['tickets', 'Tickets'], ['auto', 'Automations'], ['templates', 'Templates']].map(([k, l]) => h('button', { 'aria-pressed': String(sub === k), text: l, onclick: () => { state.boardSub = k; render() } }))),
+      h('label', { class: 'signer' }, 'Signing as ', h('input', { value: signer(), placeholder: 'your name', 'aria-label': 'Your sign-off name', onchange: (e) => { safeSet(LS_SIGNER, e.target.value.trim() || null); render() } }))))
+    if (!b.sync?.lastIngestAt && !DEMO) wrap.append(h('div', { class: 'banner bad', text: 'No Gmail data yet. Check the Apps Script in the support inbox is running.' }))
+    if (b.sync?.lastIngestAt && !b.draftScript && !DEMO) wrap.append(h('div', { class: 'banner', text: 'The Gmail script has not picked up drafts yet. Paste the updated script into script.google.com and run "upgrade" once, then "Put in Gmail" works.' }))
+    if (sub === 'auto') wrap.append(automationView(b))
+    else if (sub === 'templates') wrap.append(templatesView(b))
+    else wrap.append(ticketsView(b))
+    return wrap
+  }
+
+  function ticketsView(b) {
+    const qKey = state.boardQueue || 'reply'
+    const counts = Object.fromEntries(QUEUES.map(([k, , f]) => [k, b.tickets.filter(f).length]))
+    const calvinNew = b.tickets.filter((t) => t.status === 'With Calvin' && t.clickup?.calvinReplied).length
+    const frag = h('div')
+    frag.append(h('div', { class: 'queues' }, QUEUES.map(([k, l]) => h('button', { class: 'q' + (k === qKey ? ' on' : ''), onclick: () => { state.boardQueue = k; state.openTicket = null; render() } },
+      l, h('b', { text: fmtInt(counts[k]) }), k === 'calvin' && calvinNew ? h('span', { class: 'tag good', text: `${calvinNew} answered` }) : null)),
+      h('input', { class: 'search', type: 'search', placeholder: 'Search name, email, subject, #INN…', value: state.boardSearch || '', oninput: (e) => { state.boardSearch = e.target.value; clearTimeout(state._st); state._st = setTimeout(() => { render(); const el = $('.board .search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) } }, 250) } })))
+    const f = QUEUES.find(([k]) => k === qKey)[2]
+    const needle = (state.boardSearch || '').trim().toLowerCase()
+    let list = b.tickets.filter(f)
+    if (needle) list = b.tickets.filter((t) => [t.customerName, t.customerEmail, t.subject, t.lastExcerpt, ...(t.orderNumbers || []), ...(t.orders || []).map((o) => o.name)].join(' ').toLowerCase().includes(needle))
+    // Risky first, then the longest-waiting.
+    const risk = (t) => (t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') ? 1 : 0)
+    list.sort((a, c) => (risk(c) - risk(a)) || (new Date(a.lastIn) - new Date(c.lastIn)))
+    if (!list.length) { frag.append(h('div', { class: 'card empty', text: needle ? 'Nothing matches that search.' : qKey === 'reply' ? 'Inbox zero. Nobody is waiting on us.' : 'Nothing here.' })); return frag }
+    const groups = new Map()
+    for (const t of list) { if (!groups.has(t.category)) groups.set(t.category, []); groups.get(t.category).push(t) }
+    const stageOf = Object.fromEntries((b.automation || []).map((a) => [a.category, a]))
+    // Groups holding a dispute, legal or reaction ticket first, then the biggest.
+    const ordered = [...groups.entries()].sort((a, c) => (Math.max(...c[1].map(risk)) - Math.max(...a[1].map(risk))) || (c[1].length - a[1].length))
+    for (const [cat, items] of ordered) {
+      const st = stageOf[cat]
+      const stage = b.stages.find((s) => s.key === st?.stage)
+      frag.append(h('section', { class: 'tgroup' },
+        h('div', { class: 'tg-head' }, h('h3', { text: cat }), h('span', { class: 'n', text: fmtInt(items.length) }), stage && stage.key !== 'manual' ? tag(stage.label, 'good') : null),
+        h('div', { class: 'tlist' }, items.map((t) => ticketRow(t, b)))))
+    }
+    return frag
+  }
+
+  function slaChip(t) {
+    if (t.waitingHours == null) return h('span', { class: 'sla ok', text: t.lastOut ? 'replied ' + agoTxt(t.lastOut) : '' })
+    const hrs = t.waitingHours
+    const urgent = t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') || t.vip
+    const cls = hrs > 24 || (urgent && hrs > 4) ? 'bad' : hrs > 6 || (urgent && hrs > 2) ? 'warn' : 'ok'
+    return h('span', { class: 'sla ' + cls, title: 'Time since the customer last wrote', text: hrsTxt(hrs) })
+  }
+  const agoTxt = (d) => { const hrs = (Date.now() - new Date(d)) / 3600e3; return hrs < 1 ? Math.max(1, Math.round(hrs * 60)) + 'm ago' : hrs < 48 ? Math.round(hrs) + 'h ago' : Math.round(hrs / 24) + 'd ago' }
+
+  function ticketRow(t, b) {
+    const open = state.openTicket === t.id
+    const lastDraft = t.drafts[0]
+    const row = h('div', { class: 'trow' + (open ? ' open' : '') + (t.reopened ? ' back' : '') })
+    row.append(h('button', { class: 'tsum', 'aria-expanded': String(open), onclick: () => { state.openTicket = open ? null : t.id; render() } },
+      slaChip(t),
+      h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown' }), t.vip ? tag('VIP', 'warn') : null),
+      h('span', { class: 'subj', text: t.subject }),
+      h('span', { class: 'tags' },
+        t.reopened ? tag('Replied again', 'bad') : null,
+        t.flags.map((x) => tag(FLAG_LABEL[x] || x, 'bad')),
+        t.orders?.[0] ? tag(t.orders[0].name) : null,
+        lastDraft && lastDraft.status === 'pending' ? tag('Draft → Gmail…', 'warn') : lastDraft && lastDraft.status === 'created' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag(lastDraft.source === 'auto' ? 'Auto-draft in Gmail' : 'Draft in Gmail', 'good') : null,
+        t.clickup ? tag(t.clickup.calvinReplied ? 'Calvin answered' : 'With Calvin', t.clickup.calvinReplied ? 'good' : 'bad') : null),
+      h('span', { class: 'st tag ' + (STATUS_CLS[t.status] || ''), text: t.status })))
+    if (open) row.append(ticketDetail(t, b))
+    return row
+  }
+
+  function ticketDetail(t, b) {
+    const box = h('div', { class: 'tdetail' })
+    // Left: what the customer said and who they are
+    const left = h('div', { class: 'tleft' })
+    left.append(h('div', { class: 'meta' },
+      h('a', { href: t.link, target: '_blank', rel: 'noopener', class: 'btn sm ghost', text: 'Open thread in Gmail' }),
+      t.customerLink ? h('a', { href: t.customerLink, target: '_blank', rel: 'noopener', class: 'btn sm ghost', text: 'All their emails' }) : null,
+      h('span', { class: 'muted', text: `${t.customerEmail || ''} · first wrote ${fmtDate(t.firstIn)} · ${t.msgsIn} from them, ${t.msgsOut} from us` })))
+    left.append(h('div', { class: 'msg' }, h('div', { class: 'lbl', text: `Their latest message · ${agoTxt(t.lastIn)}` }), h('p', { text: t.lastExcerpt || t.excerpt || '(message text arrives with the updated Gmail script)' })))
+    if (t.excerpt && t.lastExcerpt && !t.lastExcerpt.startsWith(t.excerpt.slice(0, 60))) left.append(h('details', { class: 'msg first' }, h('summary', { text: 'First message' }), h('p', { text: t.excerpt })))
+    left.append(h('div', { class: 'lbl', style: 'margin-top:12px', text: t.orders?.length ? `Orders${t.spent ? ` · $${Math.round(t.spent)} spent` : ''}${t.vip ? ' · VIP (2+ orders or $100+)' : ''}` : 'Orders' }))
+    left.append(t.orders?.length ? h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, ['Order', 'Placed', 'Payment', 'Fulfilment', 'Tracking', 'Total'].map((x, i) => h('th', { class: i > 4 ? 'num' : '', text: x })))),
+      h('tbody', null, t.orders.map((o) => h('tr', null,
+        h('td', null, h('b', { text: o.name }), o.subscription ? ' ' : null, o.subscription ? tag('Sub') : null),
+        h('td', { text: fmtDate(o.createdAt) }),
+        h('td', { text: o.cancelledAt ? 'Cancelled' : (o.financial || '').replace(/_/g, ' ').toLowerCase() }),
+        h('td', { text: o.deliveredAt ? `Delivered ${fmtDate(o.deliveredAt)}` : o.fulfilledAt ? `Shipped ${fmtDate(o.fulfilledAt)}` : (o.status || 'unfulfilled').replace(/_/g, ' ').toLowerCase() }),
+        h('td', null, o.trackingNumber ? h('a', { href: o.trackingUrl || `https://t.17track.net/en#nums=${encodeURIComponent(o.trackingNumber)}`, target: '_blank', rel: 'noopener', text: `${o.carrier ? o.carrier + ' ' : ''}${o.trackingNumber}` }) : '–'),
+        h('td', { class: 'num', text: '$' + o.total.toFixed(2) })))))) : h('p', { class: 'muted', style: 'margin:4px 0', text: b.shopifyReady ? 'No order found for this email or order number. Ask for their #INN number.' : 'Shopify not connected yet: order details appear once the Shopify keys are in.' }))
+    // Working state
+    left.append(h('div', { class: 'work' },
+      h('label', null, 'Status ', h('select', { onchange: (e) => saveTicket(t, { status: e.target.value }) }, b.statuses.map((s) => h('option', { value: s, selected: s === t.status, text: s })))),
+      h('label', null, 'Type ', h('select', { onchange: (e) => saveTicket(t, { category: e.target.value === t.autoCategory ? '' : e.target.value }) }, Object.keys(b.defaults).map((c) => h('option', { value: c, selected: c === t.category, text: c })))),
+      h('textarea', { class: 'note', rows: 2, placeholder: 'Internal note (not sent to the customer)', onchange: (e) => saveTicket(t, { note: e.target.value }) }, t.note || '')))
+    if (t.statusBy) left.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:4px', text: `Last change by ${t.statusBy} ${agoTxt(t.statusAt)}` }))
+    left.append(calvinBox(t, b))
+    box.append(left, composer(t, b))
+    return box
+  }
+
+  function composer(t, b) {
+    state.compose = state.compose || {}
+    const c = state.compose[t.id] || (state.compose[t.id] = { template: b.defaults[t.category] || 'general', text: null })
+    const tpl = b.templates.find((x) => x.key === c.template) || b.templates[0]
+    const me = signer()
+    const vars = { ...t.vars, agent: me || '[YOUR NAME]' }
+    if (c.text == null) c.text = fillTpl(tpl?.body || '', vars)
+    const ta = h('textarea', { class: 'reply', rows: 14, spellcheck: 'true', oninput: (e) => { c.text = e.target.value; warn() } }, c.text)
+    const warnBox = h('div', { class: 'warns' })
+    const send = h('button', { class: 'btn', text: 'Put in Gmail as draft' })
+    const msg = h('span', { class: 'msg' })
+    function warn() {
+      const ph = [...new Set(c.text.match(PLACEHOLDER_RE) || [])]
+      const br = [...new Set(c.text.match(/\{\w+\}/g) || [])]
+      warnBox.replaceChildren(...[...ph, ...br].map((p) => tag('Replace ' + p, 'bad')))
+      send.disabled = !!(ph.length || br.length) || !c.text.trim()
+    }
+    warn()
+    send.onclick = async () => {
+      send.disabled = true; msg.textContent = 'Queuing…'
+      try {
+        if (!DEMO) await api('/cs/board/draft', { method: 'POST', body: { id: t.id, body: c.text, template: c.template, category: t.category } })
+        t.drafts.unshift({ status: 'pending', source: 'agent', at: new Date().toISOString(), by: state.me.name })
+        t.status = 'Drafted'; t.statusSet = true
+        msg.textContent = 'Queued. It appears as a draft in the Gmail thread within 5 minutes; check it there and press Send.'
+        setTimeout(render, 2500)
+      } catch (e) { msg.textContent = e.message; send.disabled = false }
+    }
+    const copy = h('button', { class: 'btn ghost', text: 'Copy', onclick: async () => { try { await navigator.clipboard.writeText(c.text); msg.textContent = 'Copied.' } catch { ta.select(); msg.textContent = 'Press Ctrl+C to copy.' } } })
+    const pick = h('select', { 'aria-label': 'Template', onchange: (e) => { c.template = e.target.value; c.text = null; render() } },
+      b.templates.map((x) => h('option', { value: x.key, selected: x.key === c.template, text: `${x.title}${x.approved ? '' : ' (not approved)'}` })))
+    const reset = h('button', { class: 'tbtn', text: 'Reset', title: 'Refill from the template', onclick: () => { c.text = null; render() } })
+    const box = h('div', { class: 'tright' },
+      h('div', { class: 'lbl' }, 'Reply ', pick, ' ', reset),
+      tpl?.checklist ? h('div', { class: 'check' }, h('b', { text: 'Before sending: ' }), tpl.checklist) : null,
+      !me ? h('div', { class: 'banner', style: 'margin:6px 0', text: 'Set your sign-off name in "Signing as" above.' }) : null,
+      ta, warnBox,
+      h('div', { class: 'actions' }, send, copy, msg))
+    const drafts = t.drafts.slice(0, 3)
+    if (drafts.length) box.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:6px' }, drafts.map((d) => h('div', { text: `${d.source === 'auto' ? 'Auto-draft' : 'Draft by ' + (d.by || '?')} ${agoTxt(d.at)}: ${d.status === 'created' ? 'in Gmail' : d.status === 'pending' ? 'waiting for the Gmail script' : d.status}${d.error ? ' (' + d.error + ')' : ''}` }))))
+    return box
+  }
+
+  function calvinBox(t, b) {
+    const box = h('div', { class: 'calvin' })
+    if (t.clickup) {
+      box.append(h('div', { class: 'lbl' }, 'With Calvin in ClickUp ', h('a', { href: t.clickup.url, target: '_blank', rel: 'noopener', text: 'Open task' }), t.clickup.status ? ` · ${t.clickup.status}` : ''))
+      if (t.clickup.error) box.append(h('p', { class: 'muted', text: 'Could not read the task: ' + t.clickup.error }))
+      for (const cm of t.clickup.comments || []) box.append(h('div', { class: 'cmt' + (cm.fromCalvin ? ' calvin' : '') }, h('b', { text: cm.by + ' ' }), h('span', { class: 'muted', text: agoTxt(cm.at) }), h('p', { text: cm.text })))
+      if (!(t.clickup.comments || []).length) box.append(h('p', { class: 'muted', style: 'margin:4px 0', text: 'No reply from Calvin yet.' }))
+      return box
+    }
+    if (!state.escalating || state.escalating !== t.id) {
+      box.append(h('button', { class: 'btn ghost sm', text: 'Send to Calvin', title: b.clickupReady ? 'Creates a task in ClickUp Founder Escalations' : 'Needs INNADERM_CLICKUP_TOKEN in Vercel', disabled: !b.clickupReady && !DEMO, onclick: () => { state.escalating = t.id; render() } }),
+        b.clickupReady || DEMO ? h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Refunds, pausing subscriptions in Loop, anything you are unsure of.' }) : h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Add INNADERM_CLICKUP_TOKEN in Vercel to turn this on.' }))
+      return box
+    }
+    const reason = h('select', null, ['Refund approval', 'Pause or cancel subscription (Loop)', 'Replacement / reship', 'Adverse reaction', 'Chargeback or dispute', 'Not sure how to answer', 'Other'].map((r) => h('option', { value: r, text: r, selected: (r === 'Adverse reaction' && t.flags.includes('reaction')) || (r === 'Chargeback or dispute' && t.flags.includes('chargeback')) })))
+    const question = h('textarea', { rows: 3, placeholder: 'What do you need Calvin to decide or do? e.g. "Approve a refund of the 1-pack ($59.99)?" or "Please pause her subscription in Loop."' })
+    const position = h('input', { type: 'text', placeholder: 'What the customer wants (optional)' })
+    const msg = h('span', { class: 'msg' })
+    const go = h('button', { class: 'btn sm', text: 'Create ClickUp task for Calvin', onclick: async () => {
+      go.disabled = true; msg.textContent = 'Creating…'
+      try {
+        const r = DEMO ? { task: { id: 'demo', url: 'https://app.clickup.com' } } : await api('/cs/board/escalate', { method: 'POST', body: { id: t.id, reason: reason.value, question: question.value, customerPosition: position.value } })
+        t.clickup = { id: r.task.id, url: r.task.url, status: 'new ticket', comments: [] }; t.status = 'With Calvin'; t.statusSet = true
+        state.escalating = null; render()
+      } catch (e) { msg.textContent = e.message; go.disabled = false }
+    } })
+    box.append(h('div', { class: 'esc' }, h('div', { class: 'lbl', text: 'Send to Calvin (ClickUp Founder Escalations)' }), reason, question, position,
+      h('div', { class: 'actions' }, go, h('button', { class: 'btn ghost sm', text: 'Cancel', onclick: () => { state.escalating = null; render() } }), msg)))
+    return box
+  }
+
+  function automationView(b) {
+    const isAdmin = state.me?.role === 'admin'
+    const rows = b.automation || []
+    const saved = rows.reduce((a, r) => a + r.savedHoursPerWeek, 0)
+    const total = rows.reduce((a, r) => a + r.hoursPerWeek, 0)
+    const auto = b.stages.find((s) => s.key === 'autodraft').save
+    const potential = rows.filter((r) => r.potential !== 'never' && r.potential !== 'low').reduce((a, r) => a + Math.max(r.savedHoursPerWeek, r.hoursPerWeek * auto), 0) + rows.filter((r) => r.potential === 'low' || r.potential === 'never').reduce((a, r) => a + r.savedHoursPerWeek, 0)
+    const sec = h('div')
+    sec.append(h('div', { class: 'kpis', style: 'margin-top:4px' },
+      tile('Support hours per week', fmt1(total), 'h', h('div', { class: 'delta' }, h('span', { class: 'muted', text: `tickets × ${b.minutes || 6} min each` })), null),
+      tile('Saved by automation now', fmt1(saved), 'h/wk', h('div', { class: 'delta' }, h('span', { class: saved ? 'up' : 'flat', text: total ? `${Math.round((saved / total) * 100)}% of support time` : '' })), null),
+      tile('If every safe type is auto-drafted', fmt1(potential), 'h/wk', h('div', { class: 'delta' }, h('span', { class: 'muted', text: 'adverse reactions and disputes stay personal' })), null)))
+    sec.append(h('div', { class: 'card', style: 'margin-top:14px' },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Automation ladder' }), h('div', { class: 'hint', text: 'Move each ticket type up one step at a time. A type can only be auto-drafted once its template is approved. Auto-send comes after a Claude reply step.' }))),
+      h('div', { class: 'ladder' }, b.stages.map((s, i) => h('div', { class: 'rung' }, h('b', { text: `${i}. ${s.label}` }), h('span', { text: s.help }), h('span', { class: 'muted', text: `saves about ${Math.round(s.save * 100)}% of handling time` })))),
+      h('div', { style: 'overflow:auto;margin-top:12px' }, h('table', { class: 'dtable auto' },
+        h('thead', null, h('tr', null, ['Ticket type', 'Per week', 'Stage', 'Template', 'Drafts (28 d)', 'Saved now', 'Owner / next step'].map((x) => h('th', { text: x })))),
+        h('tbody', null, rows.map((r) => {
+          const stageSel = isAdmin && r.potential !== 'never'
+            ? h('select', { onchange: async (e) => { const v = e.target.value; try { if (!DEMO) await api('/cs/automation', { method: 'PUT', body: { category: r.category, stage: v } }); r.stage = v; loadBoard(true) } catch (err) { alert(err.message); render() } } },
+              b.stages.map((s) => h('option', { value: s.key, selected: s.key === r.stage, disabled: s.key === 'autosend' || (s.key === 'autodraft' && !r.template?.approved), text: s.label })))
+            : h('span', { text: r.potential === 'never' ? 'Never automate' : b.stages.find((s) => s.key === r.stage)?.label })
+          const owner = isAdmin ? h('input', { value: r.owner || '', placeholder: 'owner', style: 'width:90px', onchange: (e) => DEMO || api('/cs/automation', { method: 'PUT', body: { category: r.category, owner: e.target.value } }) }) : h('span', { text: r.owner || '' })
+          const next = isAdmin ? h('input', { value: r.nextStep || '', placeholder: 'next step', style: 'width:200px', onchange: (e) => DEMO || api('/cs/automation', { method: 'PUT', body: { category: r.category, nextStep: e.target.value } }) }) : h('span', { text: r.nextStep || '' })
+          return h('tr', null,
+            h('td', null, h('b', { text: r.category }), h('div', { class: 'logic', text: r.play })),
+            h('td', { text: fmt1(r.perWeek) }),
+            h('td', null, stageSel, r.stageSince && r.stage !== 'manual' ? h('div', { class: 'logic', text: 'since ' + fmtDate(r.stageSince) }) : null),
+            h('td', null, r.template ? h('span', null, r.template.title, ' ', tag(r.template.approved ? 'Approved' : 'Not approved', r.template.approved ? 'good' : 'warn')) : '–'),
+            h('td', { text: `${fmtInt(r.draftsAgent28)} agent · ${fmtInt(r.draftsAuto28)} auto` }),
+            h('td', { text: r.savedHoursPerWeek ? fmt1(r.savedHoursPerWeek) + ' h/wk' : '–' }),
+            h('td', null, owner, ' ', next))
+        }))))))
+    sec.append(h('p', { class: 'muted', style: 'font-size:12px;margin-top:10px', text: `Hours are estimates: tickets in the last 28 days, ${b.minutes || 6} minutes each (change in Settings), times the share each stage saves. Drafts counts what the team actually put into Gmail from the board, so you can see each step being used.` }))
+    return sec
+  }
+
+  function templatesView(b) {
+    const isAdmin = state.me?.role === 'admin'
+    const sec = h('div')
+    sec.append(h('p', { class: 'muted', style: 'font-size:12.5px', text: 'Templates fill in {first_name}, {order_status} (live from Shopify: shipped, tracking, delivered or not yet shipped), {order_number}, {order_or_ask}, {discount_code} and {agent}. Anything in [CAPITALS IN BRACKETS] must be replaced by the agent; drafts with one left are never put into Gmail. Only approved templates can be auto-drafted.' }))
+    const sample = (b.tickets.find((t) => t.orders?.length) || b.tickets[0])?.vars || { first_name: 'Jamie', order_status: 'Your order #INN17489 shipped on October 20 with USPS.', order_number: '#INN17489', order_or_ask: 'Confirmation that the order is #INN17489', discount_code: b.settings.cs_discount_code }
+    for (const t of b.templates) {
+      const ed = (state.tplEdit ||= {})[t.key] || (state.tplEdit[t.key] = { ...t, categories: [...t.categories] })
+      const msg = h('span', { class: 'msg' })
+      const card = h('div', { class: 'card tpl' })
+      card.append(h('div', { class: 'card-head' }, h('div', null, h('h3', { text: t.title }), h('div', { class: 'hint', text: (t.categories.join(', ') || 'Not the default for any type') + (t.updatedBy ? ` · edited by ${t.updatedBy} ${fmtDate(t.updatedAt)}` : '') })), h('div', { class: 'tools' }, tag(t.approved ? 'Approved' : 'Not approved', t.approved ? 'good' : 'warn'))))
+      if (isAdmin) {
+        card.append(h('div', { class: 'tpl-grid' },
+          h('div', null,
+            h('input', { value: ed.title, oninput: (e) => { ed.title = e.target.value } }),
+            h('textarea', { rows: 10, oninput: (e) => { ed.body = e.target.value } }, ed.body),
+            h('input', { value: ed.checklist || '', placeholder: 'Before-sending check shown to the agent', oninput: (e) => { ed.checklist = e.target.value } }),
+            h('div', { class: 'cats' }, Object.keys(b.defaults).map((c) => h('label', null, h('input', { type: 'checkbox', checked: ed.categories.includes(c), onchange: (e) => { ed.categories = e.target.checked ? [...ed.categories, c] : ed.categories.filter((x) => x !== c) } }), c))),
+            h('label', { class: 'appr' }, h('input', { type: 'checkbox', checked: ed.approved, onchange: (e) => { ed.approved = e.target.checked } }), ' Approved (safe to send after a quick check; allows auto-drafts)'),
+            h('div', { class: 'actions' }, h('button', { class: 'btn sm', text: 'Save template', onclick: async () => { msg.textContent = 'Saving…'; try { if (!DEMO) await api('/cs/templates', { method: 'PUT', body: ed }); Object.assign(t, ed); msg.textContent = 'Saved'; loadBoard(true) } catch (e) { msg.textContent = e.message } } }), msg)),
+          h('div', { class: 'preview' }, h('div', { class: 'lbl', text: 'Preview with a real ticket' }), h('pre', { text: fillTpl(ed.body, { ...sample, agent: signer() || 'Kashif' }) }))))
+      } else card.append(h('pre', { class: 'preview', text: fillTpl(t.body, { ...sample, agent: signer() || 'Kashif' }) }))
+      sec.append(card)
+    }
+    return sec
+  }
+
+  function demoBoard() {
+    const ago = (h2) => new Date(Date.now() - h2 * 3600e3).toISOString()
+    const mk = (id, name, email, subject, category, last, waiting, extra = {}) => ({
+      id, subject, customerName: name, customerEmail: email, category, autoCategory: category, flags: [], excerpt: last, lastExcerpt: last,
+      orderNumbers: [], firstIn: ago(waiting + 30), lastIn: ago(waiting), lastOut: ago(waiting + 20), lastFrom: 'in', msgsIn: 2, msgsOut: 1, inInbox: true,
+      waitingHours: waiting, status: 'New', statusSet: false, note: '', reopened: false, needsReply: true, clickup: null, drafts: [], link: 'https://mail.google.com', customerLink: 'https://mail.google.com', orders: [], vip: false, spent: 0, ...extra,
+    })
+    const ord = (name, o) => ({ name, createdAt: ago(240), cancelledAt: null, financial: 'PAID', status: 'FULFILLED', total: 59.99, subscription: false, fulfilledAt: ago(150), deliveredAt: null, carrier: 'USPS', trackingNumber: '9400111899223344556677', trackingUrl: null, ...o })
+    const tickets = [
+      mk('d1', 'Diana Lopez', 'diana@example.com', 'Where is my order?', 'Where is my order', 'Hi, I ordered 10 days ago and still have nothing. Can you tell me where it is? Order #INN17481', 30, { orders: [ord('#INN17481', {})], orderNumbers: ['#INN17481'] }),
+      mk('d2', 'Brittany Cole', 'brit@example.com', 'Cancel my subscription', 'Subscription', 'Please cancel, I have too many bottles at home right now.', 9, { orders: [ord('#INN17440', { subscription: true }), ord('#INN16012', { subscription: true, deliveredAt: ago(500) })], vip: true, spent: 119.98 }),
+      mk('d3', 'Dawn Reyes', 'dawn@example.com', 'Bad reaction', 'Adverse reaction', 'I got a rash on my neck after a week of taking these. Should I stop?', 3, { flags: ['reaction'], orders: [ord('#INN17390', { deliveredAt: ago(200) })] }),
+      mk('d4', 'Tyler Brooks', 'tyler@example.com', 'Refund', 'Refund / return', 'It has not done anything for my dandruff after 3 weeks, I want my money back.', 52, { status: 'With Calvin', statusSet: true, clickup: { id: 'x', url: 'https://app.clickup.com', status: 'founder responded', calvinReplied: true, comments: [{ by: 'Calvin Beck', fromCalvin: true, at: ago(2), text: 'Offer 3 packs at 50% first. If he insists, refund the 1-pack.' }] } }),
+      mk('d5', 'Kevin Ng', 'kevin@example.com', 'Re: Your order', 'Where is my order', 'Thanks, but tracking has not moved in a week.', 1.5, { reopened: true, statusSet: true, status: 'Done', orders: [ord('#INN17501', { fulfilledAt: ago(170) })], drafts: [] }),
+      mk('d6', 'Patrice Hall', 'patrice@example.com', 'Question before buying', 'Product question', 'Can I take this with my thyroid medication?', 20),
+    ]
+    const tplDemo = [
+      { key: 'wismo', title: 'Where is my order', categories: ['Where is my order'], approved: true, checklist: 'Check the order line matches Shopify.', body: "Hi {first_name},\n\nThank you for reaching out, and sorry for the wait.\n\n{order_status}\n\nIf anything looks off, just reply here and I'll chase it for you.\n\n{agent}\nInnaderm" },
+      { key: 'sub_change', title: 'Subscription: wants to cancel or pause', categories: ['Subscription'], approved: true, checklist: 'If they confirm: send to Calvin (Loop).', body: "Hi {first_name},\n\nThanks for letting me know. Before I make any changes, may I ask what prompted this? If it's timing or having too many on hand, I can pause your subscription or move your next delivery back instead, so nothing ships until you're ready.\n\n{agent}\nInnaderm" },
+      { key: 'reaction', title: 'Adverse reaction', categories: ['Adverse reaction'], approved: false, checklist: 'Send to Calvin the same day.', body: "Hi {first_name},\n\nI'm really sorry to hear this. Please stop taking the capsules for now, and if the reaction is severe or doesn't settle, please speak to a doctor or pharmacist.\n\n{agent}\nInnaderm" },
+      { key: 'refund', title: 'Refund request (first reply)', categories: ['Refund / return'], approved: false, checklist: 'Any refund needs Calvin.', body: 'Hi {first_name},\n\nThank you for getting in touch...\n\n{agent}\nInnaderm' },
+      { key: 'product_q', title: 'Product question', categories: ['Product question'], approved: false, checklist: 'Only answer from innaderm.com.', body: "Hi {first_name},\n\nThanks for your question!\n\n[ANSWER FROM THE PRODUCT PAGE OR CALVIN]\n\nIf you'd like to give it a try, here's 15% off your order: {discount_code}.\n\n{agent}\nInnaderm" },
+      { key: 'general', title: 'General reply', categories: ['Other'], approved: false, body: 'Hi {first_name},\n\n[YOUR REPLY]\n\n{agent}\nInnaderm' },
+    ]
+    const vars = (t) => ({ first_name: t.customerName.split(' ')[0], order_number: t.orders[0]?.name || '[ORDER NUMBER]', order_status: t.orders[0] ? (t.orders[0].fulfilledAt ? `Your order ${t.orders[0].name} shipped on ${fmtDate(t.orders[0].fulfilledAt)} with USPS. Your tracking number is ${t.orders[0].trackingNumber}.` : `Your order ${t.orders[0].name} hasn't shipped yet.`) : "Could you send me your order number (it starts with #INN)?", order_or_ask: 'Your order number', discount_code: 'WELCOME15' })
+    for (const t of tickets) t.vars = vars(t)
+    const cats = ['Where is my order', 'Subscription', 'Refund / return', 'Product question', 'Not working / results', 'Cancel order', 'Marked delivered, not received', 'Billing / payment', 'Address change', 'Damaged / wrong / missing item', 'Discount / offer', 'Adverse reaction', 'Chargeback / dispute threat', 'Other']
+    const defaults = Object.fromEntries(cats.map((c) => [c, (tplDemo.find((x) => x.categories.includes(c)) || tplDemo[tplDemo.length - 1]).key]))
+    const pw = { 'Where is my order': 52, Subscription: 31, 'Refund / return': 18, 'Product question': 16, 'Not working / results': 12, 'Cancel order': 9, 'Marked delivered, not received': 7, 'Billing / payment': 6, 'Address change': 4, 'Damaged / wrong / missing item': 3, 'Discount / offer': 3, 'Adverse reaction': 2, 'Chargeback / dispute threat': 2, Other: 8 }
+    const never = new Set(['Adverse reaction', 'Chargeback / dispute threat'])
+    const stagesDemo = [{ key: 'manual', label: 'Manual', save: 0, help: 'Written from scratch each time.' }, { key: 'template', label: 'Approved template', save: 0.4, help: 'Agent picks the template; name, order and tracking fill in.' }, { key: 'autodraft', label: 'Auto-drafted in Gmail', save: 0.7, help: 'A filled draft is waiting in the Gmail thread when the ticket arrives. Agent checks and sends.' }, { key: 'autosend', label: 'Auto-send', save: 0.95, help: 'Sent without a person. Next step: Claude-written replies with a review sample. Not switched on yet.' }]
+    const stageOf = { 'Where is my order': 'autodraft', Subscription: 'template' }
+    const automation = cats.map((c) => { const st = stagesDemo.find((s) => s.key === (stageOf[c] || 'manual')); const tpl = tplDemo.find((x) => x.key === defaults[c]); return { category: c, potential: never.has(c) ? 'never' : ['Not working / results', 'Other'].includes(c) ? 'low' : 'high', play: '', stage: st.key, stageSince: st.key !== 'manual' ? ago(24 * 6) : null, owner: st.key !== 'manual' ? 'Khethiwe' : '', nextStep: c === 'Subscription' ? 'Approve wording with Calvin, then auto-draft' : '', perWeek: pw[c], hoursPerWeek: (pw[c] * 6) / 60, savedHoursPerWeek: (pw[c] * 6 * st.save) / 60, template: tpl ? { key: tpl.key, title: tpl.title, approved: tpl.approved } : null, draftsAgent28: st.key === 'template' ? 41 : 3, draftsAuto28: st.key === 'autodraft' ? 166 : 0, tickets28: pw[c] * 4 } })
+    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
   }
 
   // ---------- demo data (layout check without secrets: /innaderm?demo=1) ----------
