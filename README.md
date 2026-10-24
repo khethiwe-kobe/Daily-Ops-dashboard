@@ -182,3 +182,27 @@ status, type correction, an internal note, and a reply composer.
 
 Updating the Apps Script: paste the new `scripts/innaderm-gmail-sync.gs` over
 the old one (keep the key) and run `upgrade` once.
+
+### Refund log (Google Sheet)
+
+The same Apps Script keeps a Google Sheet, "Innaderm refund log (auto)", of
+every refund, cancellation, return and dispute conversation with the full text
+of the customer's messages and our replies. It is the history the refund
+decision automation learns from (what was asked, what was decided, by whom).
+Unlike the dashboard tables, it holds full bodies, so share it only with the
+team.
+
+- **Threads** tab: one row per conversation, updated as it continues. Orders
+  (#INN numbers found in the thread), what it is about (refund / chargeback /
+  cancel / return), the customer's first and latest message, all our replies
+  dated and signed, and who it is waiting on.
+- **Messages** tab: one row per message, appended once.
+
+Setup, once, in the support mailbox's Apps Script project after pasting the new
+code: run `setupRefundLog` and approve the Sheets permission. It creates the
+Sheet (owned by the support account, shared view-only with
+`REFUND_LOG_SHARE_WITH`), backfills `REFUND_LOG_BACKFILL_DAYS` (365) over the
+next hours, then updates hourly. The Sheet link is in the run's log and in
+Script Properties as `refundLogSheetId`. Gmail finds candidates with
+`REFUND_SEARCH`; `REFUND_WORDS` then checks the customer's own words, so
+newsletters, Shopify notifications and "returning customer" are left out.
