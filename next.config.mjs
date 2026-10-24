@@ -15,16 +15,20 @@ const nextConfig = {
       { source: '/matric-dance', destination: '/matric-dance.html' },
       // Innaderm Ops dashboard (static app under public/innaderm).
       { source: '/innaderm', destination: '/innaderm/index.html' },
+      // Serentia Ops dashboard (static app under public/serentia).
+      { source: '/serentia', destination: '/serentia/index.html' },
     ]
   },
   async headers() {
-    // The Innaderm dashboard is opened inside ClickUp as an Embed view, so its
+    // The Innaderm and Serentia dashboards are opened inside ClickUp as Embed views, so their
     // pages must allow ClickUp (and only ClickUp) to frame them. Next sets no
     // X-Frame-Options, so this CSP is the whole framing policy.
     const frame = "frame-ancestors 'self' https://app.clickup.com https://*.clickup.com"
     return [
       { source: '/innaderm', headers: [{ key: 'Content-Security-Policy', value: frame }] },
       { source: '/innaderm/:path*', headers: [{ key: 'Content-Security-Policy', value: frame }] },
+      { source: '/serentia', headers: [{ key: 'Content-Security-Policy', value: frame }] },
+      { source: '/serentia/:path*', headers: [{ key: 'Content-Security-Policy', value: frame }] },
     ]
   },
 }
