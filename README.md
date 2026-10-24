@@ -18,6 +18,8 @@ ticket file frozen for five days.
 | `/api/health` | Unauthenticated. Says whether the database is wired up. |
 | `/vote` | Thornies Matric Dance 2026 voting page. Public; send this link to voters. |
 | `/matric-dance` | Live results board for the dance. Needs the board's access key (or `SYNC_KEY`). |
+| `/innaderm` | Innaderm Ops dashboard: fulfilment, inventory, reorders, customer service. Access key. |
+| `/serentia` | Serentia Ops dashboard: stock per shade, Black Friday cover, reorders. Access key. |
 
 ## Environment variables
 
@@ -150,3 +152,38 @@ tickets waiting on us, automation candidates, and chargeback / reaction risk.
 Ticket types are keyword rules in `lib/innaderm/cs.js`; after changing them,
 `POST /api/innaderm/cs/reclassify` (admin) re-sorts stored tickets.
 `/innaderm?demo=1&tab=cs` shows the tab with sample data.
+
+## Serentia Ops dashboard (`/serentia`)
+
+Stock per shade, whether it lasts through Black Friday, and what to reorder
+from Zendrop. Started as a copy of the Innaderm dashboard (`public/serentia`,
+`app/api/serentia/*`, `lib/serentia/*`, `ser_*` tables) so neither can break
+the other; the differences:
+
+- **Per shade, not one total.** Orders are synced with their line items
+  (`ser_order_lines`), so sales and renewals are split by shade. Shades are
+  matched by name across Shopify, Loop and the sheet; the list is in Settings.
+- **Stock comes from the Zendrop sheet** (Inventory tab, Calvin's count) by
+  default, because Zendrop holds the stock. Only rows whose SKU carries one of
+  the configured Zendrop product ids count (default `3373424`, the current
+  Elixir+ Cream), so the old version and the brushes are ignored. Set the
+  tab's `gid` in Settings for the most reliable read; without it the tab is
+  looked up by name. Shopify inventory is the alternative.
+- **The model** is new orders per shade over the run-rate window, times the
+  Black Friday multiplier between the sale dates, plus Loop renewals due in
+  the next 30 days. Each shade gets days of cover, run-out date, order-by date
+  (run-out − lead time − buffer) and units to order to last until the
+  "cover until" date. Oversold shades (negative counts) are due now.
+- No customer service tab: Serentia support is on the Re:amaze board.
+
+| Name | Required | Notes |
+|---|---|---|
+| `SERENTIA_ADMIN_KEY` | yes | Bootstrap admin key, as for Innaderm. |
+| `SERENTIA_SHOPIFY_STORE` | yes | The store's `xxx.myshopify.com` name. No default, so it can never read another brand's store. |
+| `SERENTIA_SHOPIFY_CLIENT_ID` / `SERENTIA_SHOPIFY_CLIENT_SECRET` | yes* | Dev Dashboard app on the Serentia store, same scopes as Innaderm's. |
+| `SERENTIA_SHOPIFY_TOKEN` | no* | Legacy `shpat_` token instead of the two above. |
+| `SERENTIA_LOOP_TOKEN` | no | Loop admin API token for the Serentia store. Without it renewals are estimated from renewal orders in the last 30 days. |
+| `SERENTIA_CLICKUP_TOKEN` | no | ClickUp personal API token, if lists are configured. |
+
+`/api/serentia/health` (unauthenticated) says which are set.
+`/serentia?demo=1` renders the layout with made-up figures.
