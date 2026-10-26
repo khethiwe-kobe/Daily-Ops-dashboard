@@ -1,4 +1,4 @@
-import { session, unauthorized, forbidden, listKeys, createKey, revokeKey } from '../../../../lib/innaderm/auth'
+import { session, unauthorized, forbidden, listKeys, createKey, revokeKey, ROLES } from '../../../../lib/innaderm/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -30,7 +30,7 @@ export async function POST(request) {
   let body = null
   try { body = await request.json() } catch { body = null }
   const name = String(body?.name || '').trim().slice(0, 80)
-  const role = body?.role === 'admin' ? 'admin' : 'viewer'
+  const role = ROLES.includes(body?.role) ? body.role : 'viewer'
   if (name.length < 2) return Response.json({ error: 'Give the key a name (who it is for).' }, { status: 400 })
   const k = await createKey(name, role, s.name)
   return Response.json(k, { headers: { 'Cache-Control': 'no-store' } })

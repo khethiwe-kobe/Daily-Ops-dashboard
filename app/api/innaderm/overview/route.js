@@ -1,4 +1,4 @@
-import { session, unauthorized } from '../../../../lib/innaderm/auth'
+import { session, unauthorized, seesOps, forbidden } from '../../../../lib/innaderm/auth'
 import { overview } from '../../../../lib/innaderm/overview'
 
 export const runtime = 'nodejs'
@@ -10,6 +10,7 @@ const PERIODS = new Set([7, 14, 30, 60, 90])
 export async function GET(request) {
   const s = await session(request).catch(() => null)
   if (!s) return unauthorized()
+  if (!seesOps(s)) return forbidden()
   const url = new URL(request.url)
   const days = Number(url.searchParams.get('days') || 7)
   if (!PERIODS.has(days)) return Response.json({ error: 'days must be one of 7, 14, 30, 60, 90' }, { status: 400 })

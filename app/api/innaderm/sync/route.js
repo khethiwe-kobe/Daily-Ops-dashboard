@@ -1,4 +1,4 @@
-import { session, unauthorized } from '../../../../lib/innaderm/auth'
+import { session, unauthorized, seesOps, forbidden } from '../../../../lib/innaderm/auth'
 import { syncOrders, syncState, configured } from '../../../../lib/innaderm/shopify'
 
 export const runtime = 'nodejs'
@@ -12,6 +12,7 @@ export const maxDuration = 60
 export async function POST(request) {
   const s = await session(request).catch(() => null)
   if (!s) return unauthorized()
+  if (!seesOps(s)) return forbidden()
   if (!configured()) return Response.json({ configured: false, complete: true })
   try {
     const r = await syncOrders({ maxPages: 4 })

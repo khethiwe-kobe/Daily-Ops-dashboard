@@ -122,7 +122,15 @@
     if (state.me) load()
   }
 
+  // Support keys (e.g. Kashif) see only the Support board and Refund matrix.
+  const ALL_TABS = [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix']]
+  const tabsFor = (me) => (me?.role === 'support' ? ALL_TABS.filter(([v]) => v === 'board' || v === 'matrix') : ALL_TABS)
+  function fixView() {
+    if (state.me && !tabsFor(state.me).some(([v]) => v === state.view)) { state.view = 'board'; safeSet(LS_VIEW, 'board') }
+  }
+
   async function load() {
+    fixView()
     if (state.view === 'cs') return loadCs()
     if (state.view === 'board') return loadBoard()
     if (state.view === 'matrix') return render()
@@ -396,6 +404,7 @@
     const app = $('#app')
     app.replaceChildren()
     if (!state.me) return app.append(loginView())
+    fixView()
     app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : state.view === 'matrix' ? matrixView() : mainView(), drawer())
   }
 
@@ -445,7 +454,7 @@
       sync = at ? h('span', { class: 'pill', title: 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
     }
     const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'matrix') return; if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : !state.data) load(); else render() }
-    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
+    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, tabsFor(state.me).map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
     return h('header', { class: 'top' }, h('div', { class: 'top-in' },
       h('div', { class: 'brand' }, h('div', { class: 'mark', text: 'IN' }), h('div', null, h('span', { class: 'name', text: 'Innaderm' }), h('span', { class: 'sub', text: ' Ops' }))),
       tabs,
@@ -808,7 +817,7 @@
       } catch (e) { msg.textContent = e.message }
     }
     const keyName = h('input', { type: 'text', placeholder: 'Who is this key for? e.g. Calvin' })
-    const keyRole = h('select', null, h('option', { value: 'viewer', text: 'Viewer' }), h('option', { value: 'admin', text: 'Admin (can edit inputs and keys)' }))
+    const keyRole = h('select', null, h('option', { value: 'viewer', text: 'Viewer (all tabs, no settings)' }), h('option', { value: 'support', text: 'Support (Support board + Refund matrix only)' }), h('option', { value: 'admin', text: 'Admin (can edit inputs and keys)' }))
     const issue = async () => {
       try {
         const r = DEMO ? { key: 'inn_demo0000-demo0000-demo0000-demo0000', name: keyName.value } : await api('/keys', { method: 'POST', body: { name: keyName.value, role: keyRole.value } })
