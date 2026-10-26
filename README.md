@@ -132,6 +132,25 @@ and whether the database answers. *Shopify needs either the client ID + secret
 or the legacy token.
 `/innaderm?demo=1` renders the layout with sample data and no secrets.
 
+### Serentia stock tab
+
+`/innaderm?tab=serentia`, same login keys. Elixir+ Cream stock per shade from
+the **Inventory** tab of Zendrop's shared Serentia sheet ("Serene [3730212] |
+Zendrop", link-shared, read as CSV and cached 15 minutes): units in the Zendrop
+app, units in Zendrop's Sumai system (a mismatch is flagged), MOQ and lead time.
+Sales per shade come from the Serentia Shopify store when these are set; until
+then the rate falls back to Zendrop's own days-left estimate, which is often 0.
+
+| Name | Required | Notes |
+|---|---|---|
+| `SERENTIA_SHOPIFY_STORE` | for sales | The store's `xxxx.myshopify.com` domain. |
+| `SERENTIA_SHOPIFY_CLIENT_ID` / `SERENTIA_SHOPIFY_CLIENT_SECRET` | for sales | A Dev Dashboard app on the Serentia store with `read_orders`. Or `SERENTIA_SHOPIFY_TOKEN` (legacy `shpat_`). |
+| `SERENTIA_ZENDROP_SHEET_ID` | no | Defaults to the Serene Zendrop sheet. |
+| `SERENTIA_ZENDROP_INVENTORY_GID` | no | The Inventory tab's `gid=` from its URL; without it the tab is read by name. |
+
+Code: `lib/serentia/stock.js`, `app/api/serentia/stock`. Reorder point = lead
+time + 7 days safety; a suggested order covers 30 days after it lands.
+
 ### Customer service tab (support Gmail)
 
 Innaderm support runs on Gmail, not Re:amaze. `scripts/innaderm-gmail-sync.gs`

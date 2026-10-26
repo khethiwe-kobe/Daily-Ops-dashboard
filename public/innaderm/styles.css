@@ -383,3 +383,11 @@ footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display:
 .tsum .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tsum .who .tag, .tsum .tags .tag { flex-shrink: 0; }
 @media (max-width: 800px) { .tsum { grid-template-columns: 64px 1fr auto; } }
+
+/* Serentia stock tab */
+.ser .stbl { min-width: 760px; }
+.ser .stbl td { vertical-align: middle; }
+.ser .grid2s { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+.ser .grid2s h3 { margin: 0 0 6px; font-size: 14px; }
+.ser .notes { margin: 0; padding-left: 18px; font-size: 13px; display: grid; gap: 6px; }
+@media (max-width: 700px) { .top .seg.tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; } .top .seg.tabs button { flex: none; } }

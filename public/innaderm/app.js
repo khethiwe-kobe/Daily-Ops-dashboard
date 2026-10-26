@@ -27,7 +27,7 @@
     drawer: false,
     keys: null,
     newKey: null,
-    view: ['ops', 'cs', 'board', 'matrix'].includes(params.get('tab')) ? params.get('tab') : ['cs', 'board', 'matrix'].includes(safeGet(LS_VIEW)) ? safeGet(LS_VIEW) : 'ops',
+    view: ['ops', 'cs', 'board', 'matrix', 'serentia'].includes(params.get('tab')) ? params.get('tab') : ['cs', 'board', 'matrix', 'serentia'].includes(safeGet(LS_VIEW)) ? safeGet(LS_VIEW) : 'ops',
     board: null,
     boardLoading: false,
     boardError: null,
@@ -104,7 +104,7 @@
   async function api(path, opts = {}) {
     const headers = { Accept: 'application/json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) }
     if (state.token) headers.Authorization = 'Bearer ' + state.token
-    const r = await fetch(API + path, { ...opts, headers, credentials: 'include', body: opts.body ? JSON.stringify(opts.body) : undefined })
+    const r = await fetch(path.startsWith('/api/') ? path : API + path, { ...opts, headers, credentials: 'include', body: opts.body ? JSON.stringify(opts.body) : undefined })
     let json = null
     try { json = await r.json() } catch { json = null }
     if (r.status === 401) { state.token = null; safeSet(LS_TOKEN, null); state.me = null; render(); throw new Error('Signed out') }
@@ -114,7 +114,7 @@
 
   async function boot() {
     applyTheme()
-    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); state.board = demoBoard(); render(); return }
+    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); state.board = demoBoard(); state.ser = demoSerentia(); render(); return }
     if (state.token || document.cookie.includes('inn_session')) {
       try { state.me = await api('/auth/me') } catch { state.me = null }
     }
@@ -123,7 +123,7 @@
   }
 
   // Support keys (e.g. Kashif) see only the Support board and Refund matrix.
-  const ALL_TABS = [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix']]
+  const ALL_TABS = [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix'], ['serentia', 'Serentia stock']]
   const tabsFor = (me) => (me?.role === 'support' ? ALL_TABS.filter(([v]) => v === 'board' || v === 'matrix') : ALL_TABS)
   function fixView() {
     if (state.me && !tabsFor(state.me).some(([v]) => v === state.view)) { state.view = 'board'; safeSet(LS_VIEW, 'board') }
@@ -134,6 +134,7 @@
     if (state.view === 'cs') return loadCs()
     if (state.view === 'board') return loadBoard()
     if (state.view === 'matrix') return render()
+    if (state.view === 'serentia') return loadSerentia()
     if (DEMO) { state.data = demoData(); render(); return }
     state.loading = true; state.error = null; render()
     try {
@@ -405,7 +406,7 @@
     app.replaceChildren()
     if (!state.me) return app.append(loginView())
     fixView()
-    app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : state.view === 'matrix' ? matrixView() : mainView(), drawer())
+    app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : state.view === 'matrix' ? matrixView() : state.view === 'serentia' ? serentiaView() : mainView(), drawer())
   }
 
   function loginView() {
@@ -453,12 +454,12 @@
       const at = state.board?.sync?.lastIngestAt
       sync = at ? h('span', { class: 'pill', title: 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
     }
-    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'matrix') return; if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : !state.data) load(); else render() }
+    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'matrix') return; if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : v === 'serentia' ? !state.ser : !state.data) load(); else render() }
     const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, tabsFor(state.me).map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
     return h('header', { class: 'top' }, h('div', { class: 'top-in' },
       h('div', { class: 'brand' }, h('div', { class: 'mark', text: 'IN' }), h('div', null, h('span', { class: 'name', text: 'Innaderm' }), h('span', { class: 'sub', text: ' Ops' }))),
       tabs,
-      state.view === 'board' || state.view === 'matrix' ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
+      ['board', 'matrix', 'serentia'].includes(state.view) ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
       sync,
       h('div', { class: 'user' },
         h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: state.me.role })),
@@ -1401,6 +1402,82 @@
       sec.append(card)
     }
     return sec
+  }
+
+  // ---------- Serentia stock (/api/serentia/stock) ----------
+  async function loadSerentia() {
+    if (DEMO) { state.ser = demoSerentia(); render(); return }
+    state.serLoading = true; state.serError = null; render()
+    try { state.ser = await api('/api/serentia/stock') } catch (e) { state.serError = e.message }
+    state.serLoading = false; render()
+  }
+  const SER_STATUS = { out: ['Out of stock', 'bad'], reorder: ['Reorder now', 'bad'], soon: ['Reorder soon', 'warn'], ok: ['OK', 'good'], unknown: ['No sales rate', ''] }
+  const dayTxt = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '–')
+
+  function serentiaView() {
+    const wrap = h('div', { class: 'wrap ser' + (state.serLoading && state.ser ? ' fade' : '') })
+    if (state.serError) wrap.append(h('div', { class: 'banner bad' }, `Could not load: ${state.serError}`, h('button', { class: 'btn sm ghost', text: 'Retry', onclick: loadSerentia })))
+    const d = state.ser
+    if (!d) { if (!state.serError) wrap.append(h('div', { class: 'banner info', text: 'Loading Serentia stock…' })); return wrap }
+    const src = d.sources
+    if (src.zendrop.error) wrap.append(h('div', { class: 'banner bad', text: `Zendrop sheet: ${src.zendrop.error}${src.zendrop.stale ? ' (showing the last copy)' : ''}` }))
+    if (!src.shopify.configured) wrap.append(h('div', { class: 'banner' }, h('b', { text: 'Sales not connected. ' }), 'Days of cover use Zendrop\'s own estimate, which is often 0 or blank. Add the Serentia Shopify keys in Vercel (SERENTIA_SHOPIFY_STORE plus CLIENT_ID and CLIENT_SECRET, scope read_orders) for real sales per shade.'))
+    else if (src.shopify.error) wrap.append(h('div', { class: 'banner bad', text: `Serentia Shopify: ${src.shopify.error}` }))
+    const t = d.totals || {}
+    const S = d.shades || []
+    const out = S.filter((x) => x.status === 'out'), now = S.filter((x) => x.status === 'reorder'), soon = S.filter((x) => x.status === 'soon')
+    wrap.append(h('div', { class: 'kpis', style: 'margin-top:16px' },
+      tile('Tubes at Zendrop', fmtInt(t.onHand), null, h('div', { class: 'delta' }, h('span', { class: 'muted', text: d.updated ? `Zendrop updated ${d.updated}` : '' })), null),
+      tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'tubes', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : 'needs Shopify' })), null),
+      tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant).join(', ') || 'none' })), null),
+      tile('Reorder now', fmtInt(now.length + out.length), 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
+      tile('Suggested order', t.suggest ? fmtInt(t.suggest) : '0', 'tubes', h('div', { class: 'delta' }, h('span', { class: t.belowMoq ? 'down' : 'muted', text: t.moq ? `MOQ ${fmtInt(t.moq)}${t.belowMoq ? ': top up to the MOQ' : ''}` : '' })), null)))
+    const lead = S[0]?.leadDays ?? 10
+    const tbl = h('table', { class: 'tbl stbl' },
+      h('thead', null, h('tr', null, ['Shade', 'Zendrop app', 'Sumai', 'Sold / day', 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 7 ? 'num' : '', text: x })))),
+      h('tbody', null, S.map((x) => h('tr', null,
+        h('td', null, h('b', { text: x.variant })),
+        h('td', { class: 'num', text: fmtInt(x.onHand) }),
+        h('td', { class: 'num' }, fmtInt(x.sumai), x.mismatch ? ' ' : null, x.mismatch ? h('span', { class: 'tag warn', title: 'Zendrop app and the Sumai system disagree: ask Zendrop which is right', text: 'check' }) : null),
+        h('td', { class: 'num', title: x.rateSource === 'zendrop' ? "From Zendrop's days-left estimate" : x.rateSource === 'shopify' ? `${fmtInt(x.sold)} tubes in ${d.settings.baselineDays} days` : '' }, x.rate == null ? '–' : fmt1(x.rate), x.rateSource === 'zendrop' ? h('small', { class: 'muted', text: ' ZD' }) : null),
+        h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : fmtInt(x.cover) }),
+        h('td', { class: 'num', text: x.status === 'out' ? 'now' : dayTxt(x.runsOut) }),
+        h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : dayTxt(x.reorderBy) }),
+        h('td', null, tag(SER_STATUS[x.status][0], SER_STATUS[x.status][1])),
+        h('td', { class: 'num', text: x.suggest ? fmtInt(x.suggest) : '–' })))))
+    wrap.append(h('section', { class: 'section' },
+      h('div', { class: 'sec-head' }, h('h2', { text: 'Elixir+ Cream by shade' }), h('span', { class: 'why', text: `Reorder point = ${lead}-day lead time + ${d.settings.safetyDays} days safety. A suggested order covers ${d.settings.targetDays} days after it lands.` })),
+      h('div', { class: 'card', style: 'overflow:auto' }, S.length ? tbl : h('p', { class: 'muted', text: 'No shades found in the Zendrop Inventory tab.' }))))
+    const notes = []
+    if (out.length) notes.push(`${out.map((x) => x.variant).join(', ')} ${out.length === 1 ? 'is' : 'are'} at zero at Zendrop. Make sure the pre-order widget is live for ${out.length === 1 ? 'it' : 'them'} (Sell when out of stock on, real batch dates in the custom.preorder_batches field), or customers buy a shade that cannot ship.`)
+    if (S.some((x) => x.mismatch)) notes.push('Zendrop\'s app and their Sumai system disagree on at least one shade (marked "check"). Ask Zendrop which count is right before ordering.')
+    if (S.some((x) => x.rateSource === 'zendrop')) notes.push('Rates marked ZD come from Zendrop\'s own days-left estimate, not real sales.')
+    if (src.shopify.truncated) notes.push('More than 3,000 orders in the window: sales are undercounted.')
+    notes.push('Bundles: a variant title like "Buy 2 Get 1" counts as 3 tubes. Check the Shopify variant names match the shade names exactly.')
+    wrap.append(h('div', { class: 'grid2s' },
+      h('div', { class: 'card' }, h('h3', { text: 'Read this first' }), h('ul', { class: 'notes' }, notes.map((n) => h('li', { text: n })))),
+      h('div', { class: 'card' }, h('h3', { text: 'Sources' }), h('ul', { class: 'notes' },
+        h('li', null, 'Stock: Zendrop sheet, Inventory tab ', h('a', { href: `https://docs.google.com/spreadsheets/d/${src.zendrop.sheetId}/edit`, target: '_blank', rel: 'noopener', text: 'open' }), src.zendrop.cachedAt ? ` · read ${agoTxt(src.zendrop.cachedAt)}` : ''),
+        h('li', null, 'Live count: ', h('a', { href: 'https://app.zendrop.com/inventory', target: '_blank', rel: 'noopener', text: 'app.zendrop.com/inventory' })),
+        h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : 'Sales: not connected yet' })))))
+    return wrap
+  }
+
+  function demoSerentia() {
+    const mk = (variant, onHand, sumai, rate) => ({ variant, onHand, sumai, rate, leadDays: 10, moq: 2500 })
+    const rows = [mk('Ivory', 2798, 2798, 41), mk('Buff Beige', 2490, 2490, 63), mk('Warm Honey', 2667, 2667, 38), mk('Honey Almond', 316, 316, 19), mk('Caramel Glow', 1014, 0, 22), mk('Deep Mocha', 0, 0, 9)]
+    const now = Date.now(), point = 17
+    const shades = rows.map((r) => {
+      const cover = r.onHand / r.rate
+      const status = r.onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
+      return { ...r, sold: r.rate * 14, rateSource: 'shopify', cover: r.onHand ? cover : null, status, mismatch: r.sumai !== r.onHand,
+        runsOut: new Date(now + cover * 86400e3).toISOString(), reorderBy: new Date(now + Math.max(0, cover - point) * 86400e3).toISOString(),
+        suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - r.onHand) / 100) * 100 : 0 }
+    }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]))
+    const suggest = shades.reduce((a, x) => a + x.suggest, 0)
+    return { settings: { baselineDays: 14, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
+      sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: true, store: 'demo', orders: 1840 } },
+      shades, totals: { onHand: rows.reduce((a, r) => a + r.onHand, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
   }
 
   // ---------- Refund matrix (public/innaderm/refund.js) ----------
