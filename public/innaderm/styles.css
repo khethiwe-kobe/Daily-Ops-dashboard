@@ -370,3 +370,9 @@ footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display:
 .matrix .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .matrix .grid2 ul, .matrix .grid2 ol { margin: 8px 0 0; padding-left: 18px; font-size: 13px; display: grid; gap: 4px; }
 .tright .warns .tag { white-space: normal; overflow-wrap: anywhere; }
+.inrow { display: grid; grid-template-columns: 1.2fr .7fr 1.3fr 1fr 1.5fr auto; gap: 6px; margin-bottom: 6px; align-items: center; }
+.inrow input, .inrow select { border: 1px solid var(--line); background: var(--page); border-radius: 8px; padding: 6px 7px; font-size: 12.5px; min-width: 0; }
+@media (max-width: 600px) { .inrow { grid-template-columns: 1fr 1fr; } }
+.inrow { grid-template-columns: 1fr 1fr 1fr; padding-bottom: 8px; border-bottom: 1px solid var(--hair); }
+.inrow .tbtn { justify-self: start; }
+@media (max-width: 600px) { .inrow { grid-template-columns: 1fr 1fr; } }

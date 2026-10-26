@@ -580,14 +580,44 @@
     const sec = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Inventory on hand' }), h('span', { class: 'why', text: 'Two stock lines, two lead times. Packaging on hand is what turns a 22-day reorder into a 10-day one.' })))
     const grid = h('div', { class: 'grid' })
     const need30 = dec.need30.total
-    grid.append(stockCard('Packaging', dec.packaging, dec.packaging == null ? null : dec.packaging / (dec.perUnit || 1), need30, d.inventory.packaging.countedAt, 'manual count', dec.coverP, d.settings.lead_packaging, dec.perUnit !== 1 ? `${dec.perUnit} per finished unit` : null))
-    grid.append(stockCard('Finished goods', dec.finishedRaw, dec.finished, need30, d.inventory.finished.countedAt, d.inventory.finished.source === 'shopify' ? 'Shopify inventory' : 'manual count', dec.coverF, dec.leadF, dec.backlog ? `${fmtInt(dec.backlog)} units already owed to unfulfilled orders are subtracted` : null))
+    const inb = inboundSummary(d.settings)
+    const pendNote = (n, what) => (n ? `+${fmtInt(n)} ${what} on the way, not counted until ${what === 'units' ? 'they show in Shopify' : 'counted at the factory'}` : null)
+    grid.append(stockCard('Packaging', dec.packaging, dec.packaging == null ? null : dec.packaging / (dec.perUnit || 1), need30, d.inventory.packaging.countedAt, 'manual count', dec.coverP, d.settings.lead_packaging, [dec.perUnit !== 1 ? `${dec.perUnit} per finished unit` : null, pendNote(inb.packaging, 'bags')].filter(Boolean).join(' · ') || null))
+    grid.append(stockCard('Finished goods', dec.finishedRaw, dec.finished, need30, d.inventory.finished.countedAt, d.inventory.finished.source === 'shopify' ? 'Shopify inventory' : 'manual count', dec.coverF, dec.leadF, [dec.backlog ? `${fmtInt(dec.backlog)} units already owed to unfulfilled orders are subtracted` : null, pendNote(inb.finished, 'units')].filter(Boolean).join(' · ') || null))
     const vars = d.inventory.finished.variants || []
     const tracked = vars.filter((v) => v.tracked)
     grid.append(h('div', { class: 'card c4' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'By variant (Shopify)' }), h('div', { class: 'hint', text: tracked.length ? `${tracked.length} tracked variant${tracked.length === 1 ? '' : 's'}` : 'No tracked variants returned' }))),
       tracked.length ? h('div', { style: 'max-height:230px;overflow:auto' }, tableView(['Variant', 'On hand'], tracked.sort((a, b) => b.onHand - a.onHand).map((v) => [v.title || v.sku || v.id, fmtInt(v.onHand)]))) : h('p', { class: 'muted', text: d.integrations.shopify.configured ? 'Turn on inventory tracking for the product in Shopify, or switch finished goods to a manual count in Settings.' : 'Connect Shopify to list variants.' })))
+    if (inb.pending.length) grid.append(inboundCard(d, inb))
     sec.append(grid)
     return sec
+  }
+
+  // Stock on its way. Pending until it shows in Shopify; never part of on-hand or cover.
+  const INBOUND_LABEL = { ordered: 'Ordered', waiting_packaging: 'Waiting for packaging', in_transit: 'In transit', received: 'Received' }
+  function inboundSummary(S) {
+    const list = Array.isArray(S.inbound_stock) ? S.inbound_stock : []
+    const pending = list.filter((x) => x.status !== 'received')
+    const sum = (item) => pending.filter((x) => x.item === item).reduce((a, x) => a + (x.units || 0), 0)
+    return { list, pending, finished: sum('finished'), packaging: sum('packaging') }
+  }
+  function inboundCard(d, inb) {
+    const today = new Date().toISOString().slice(0, 10)
+    return h('div', { class: 'card c12' },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Inbound stock: pending until it shows in Shopify' }),
+        h('div', { class: 'hint', text: `${fmtInt(inb.finished)} finished units and ${fmtInt(inb.packaging)} bags on the way. Not counted in stock on hand, days of cover or the scale decision until marked received in Settings.` }))),
+      h('div', { style: 'overflow:auto' }, h('table', { class: 'dtable' },
+        h('thead', null, h('tr', null, ['What', 'Units', 'Status', 'Going to', 'Expected', 'Note'].map((x) => h('th', { text: x })))),
+        h('tbody', null, inb.pending.map((x) => {
+          const late = x.eta && x.eta < today
+          return h('tr', null,
+            h('td', null, h('b', { text: x.item === 'packaging' ? 'Packaging (bags)' : 'Finished goods' })),
+            h('td', { text: fmtInt(x.units) }),
+            h('td', null, h('span', { class: `status ${x.status === 'in_transit' ? 'good' : x.status === 'waiting_packaging' ? 'warn' : 'na'}`, text: INBOUND_LABEL[x.status] || x.status }), ' ', h('span', { class: 'status warn', text: 'Pending' })),
+            h('td', { text: x.to || '–' }),
+            h('td', null, x.eta ? fmtDateLong(x.eta + 'T12:00:00Z') : '–', x.eta_text ? h('div', { class: 'logic', text: x.eta_text }) : null, late ? h('div', { class: 'logic', style: 'color:var(--bad)', text: 'Past the expected date: check Shopify and mark received in Settings.' }) : null),
+            h('td', { class: 'logic' }, x.note || '', x.source ? h('div', { text: 'Source: ' + x.source }) : null))
+        })))))
   }
   function stockCard(name, units, effective, need30, countedAt, source, cover, lead, note) {
     const ratio = units == null || !need30 ? null : Math.min(1, effective / need30)
@@ -671,6 +701,9 @@
     const daysTo = (dt) => Math.round((dt - Date.now()) / 86400e3)
     if (dec.verdict === 'no') sug.push({ cls: 'bad', ic: '!', t: `Do not scale ${state.scaleDays} days right now.`, s: dec.maxN != null && dec.maxN > 0 ? `Up to ${dec.maxNLabel} is safe. Re-check after the next batch lands.` : 'Place the finished-goods order first.' })
     if (dec.verdict === 'yes' && dec.maxN != null) sug.push({ cls: 'good', ic: '✓', t: `Scaling ${state.scaleDays} days is covered.`, s: dec.maxN === MAX_SCALE ? `Stock covers at least ${MAX_SCALE} days of scaling.` : `Longest safe run is ${dec.maxNLabel}. Beyond that, stock runs out before a reorder could land.` })
+    const inbS = inboundSummary(S)
+    if (inbS.finished) sug.push({ cls: 'warn', ic: 'I', t: `${fmtInt(inbS.finished)} finished units are already on the way (not in Shopify yet).`, s: 'The suggestions below do not count them. Check the inbound list before placing another order.' })
+    if (inbS.packaging) sug.push({ cls: '', ic: 'I', t: `${fmtInt(inbS.packaging)} bags are on the way to the capsule factory.`, s: 'Not counted in packaging on hand until they arrive and are counted.' })
     if (dec.orderFinished > 0 && dec.orderFinishedBy) sug.push({ cls: daysTo(dec.orderFinishedBy) <= 7 ? 'warn' : '', ic: 'F', t: `Order ${fmtInt(dec.orderFinished)} finished units by ${fmtDateLong(dec.orderFinishedBy)}${daysTo(dec.orderFinishedBy) < 0 ? ' (overdue)' : ''}.`, s: `Covers the ${dec.leadF}-day lead time plus 30 days plus ${dec.safety} days safety under the current scenario${S.moq_finished ? ', rounded up to the ' + fmtInt(S.moq_finished) + ' MOQ' : ''}${S.unit_cost_finished ? ' · ~' + fmtMoney(dec.orderFinished * S.unit_cost_finished) : ''}.` })
     if (dec.orderPackaging != null && dec.orderPackaging > 0) sug.push({ cls: dec.orderPackagingBy && daysTo(dec.orderPackagingBy) <= 7 ? 'warn' : '', ic: 'P', t: `Order ${fmtInt(dec.orderPackaging)} packaging units${dec.orderPackagingBy ? ' by ' + fmtDateLong(dec.orderPackagingBy) : ''}.`, s: `Enough for the next finished-goods batch plus packaging lead time${S.moq_packaging ? ', rounded up to the ' + fmtInt(S.moq_packaging) + ' MOQ' : ''}. Packaging on hand is what keeps the finished-goods lead time at ${S.lead_finished_with_packaging} days instead of ${S.lead_finished_without_packaging}.` })
     if (!dec.packagingOk && dec.packaging != null) sug.push({ cls: 'warn', ic: 'P', t: 'Packaging is below one month of demand.', s: `Until it is replenished the finished-goods lead time is ${S.lead_finished_without_packaging} days, not ${S.lead_finished_with_packaging}.` })
@@ -718,7 +751,34 @@
 
   // ---------- settings drawer (admin) ----------
   function openDrawer() { state.drawer = true; state.newKey = null; if (!DEMO && !state.data && !state.cs && !state.boardSettings) api('/settings').then((r) => { state.boardSettings = r.settings; state.boardMeta = r.meta; render() }).catch(() => {}); if (DEMO && !state.data) state.data = demoData(); render(); if (!DEMO) api('/keys').then((r) => { state.keys = r.keys; render() }).catch(() => {}) }
-  function closeDrawer() { state.drawer = false; render() }
+  function closeDrawer() { state.drawer = false; state.inboundEdit = null; render() }
+  // Inbound stock editor: status, units, ETA; "received" once it shows in Shopify.
+  function inboundEditor(S) {
+    const list = (state.inboundEdit ||= JSON.parse(JSON.stringify(Array.isArray(S.inbound_stock) ? S.inbound_stock : [])))
+    const msg = h('span', { class: 'msg' })
+    const save = async () => {
+      msg.textContent = 'Saving…'
+      try {
+        if (DEMO) { S.inbound_stock = JSON.parse(JSON.stringify(list)); msg.textContent = 'Saved (demo)'; render(); return }
+        const r = await api('/settings', { method: 'PUT', body: { inbound_stock: list } })
+        msg.textContent = r.errors?.length ? r.errors.join('; ') : 'Saved'
+        state.inboundEdit = null; state.data = null; state.boardSettings = null
+        await load(); state.drawer = true; render()
+      } catch (e) { msg.textContent = e.message }
+    }
+    const row = (x, i) => h('div', { class: 'inrow' },
+      h('select', { onchange: (e) => { x.item = e.target.value } }, [['finished', 'Finished goods'], ['packaging', 'Packaging']].map(([v, l]) => h('option', { value: v, selected: x.item === v, text: l }))),
+      h('input', { type: 'number', min: 0, value: x.units, 'aria-label': 'Units', onchange: (e) => { x.units = Number(e.target.value) } }),
+      h('select', { onchange: (e) => { x.status = e.target.value } }, Object.entries(INBOUND_LABEL).map(([v, l]) => h('option', { value: v, selected: x.status === v, text: v === 'received' ? 'Received (shows in Shopify)' : l }))),
+      h('input', { type: 'date', value: x.eta || '', 'aria-label': 'Expected', onchange: (e) => { x.eta = e.target.value || null } }),
+      h('input', { type: 'text', value: x.note || '', placeholder: 'note', onchange: (e) => { x.note = e.target.value } }),
+      h('button', { class: 'tbtn', text: 'Remove', onclick: () => { list.splice(i, 1); render() } }))
+    return h('div', null,
+      h('h3', { text: 'Inbound stock (pending until it shows in Shopify)' }),
+      h('div', { class: 'inlist' }, list.filter((x) => x.status !== 'received').map((x) => row(x, list.indexOf(x)))),
+      list.some((x) => x.status === 'received') ? h('details', { style: 'font-size:12px;margin-top:6px' }, h('summary', { text: `${list.filter((x) => x.status === 'received').length} received` }), list.filter((x) => x.status === 'received').map((x) => row(x, list.indexOf(x)))) : null,
+      h('div', { class: 'actions' }, h('button', { class: 'btn ghost sm', text: 'Add inbound', onclick: () => { list.push({ id: 'in-' + Date.now(), item: 'finished', units: 0, status: 'ordered', to: 'Zendrop', eta: null, note: '' }); render() } }), h('button', { class: 'btn sm', text: 'Save inbound', onclick: save }), msg))
+  }
   function drawer() {
     if (!state.drawer || state.me.role !== 'admin') return h('div')
     const S = state.data?.settings || state.cs?.settings || state.boardSettings || {}
@@ -769,6 +829,7 @@
         F('finished_on_hand', 'Finished goods on hand (manual)', 'units counted; only used when source is manual'),
         F('packaging_on_hand', 'Packaging on hand', 'units of packaging ready for the manufacturer'),
         F('packaging_per_unit', 'Packaging per finished unit', 'usually 1')),
+      inboundEditor(S),
       h('h3', { text: 'Lead times (days)' }),
       h('div', { class: 'form' },
         F('lead_finished_with_packaging', 'Finished goods, packaging on hand', 'Calvin: "they only need like 10 days"'),
@@ -1444,7 +1505,7 @@
         zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', tabs: [{ name: 'Fulfillment Issues', gid: '1279079658', open: 23, raised7: 9, resolved7: 12, oldestDays: 31, byTopic: { 'Stuck In Transit': 9, 'Unfulfilled': 7, 'Cancellation': 4, 'HOLD': 3 }, rowsInnaderm: 40, skippedOther: 0, openRows: [{ order: '#INN70312', topic: 'Stuck In Transit', ageDays: 31 }, { order: '#INN71044', topic: 'Unfulfilled', ageDays: 12 }] }, { name: 'Zendrop Order Issues', gid: '124374285', open: 11, raised7: 4, resolved7: 6, oldestDays: 19, byTopic: { 'Incomplete Shipping Address': 8, 'Customer Phone Number Needed': 3 }, rowsInnaderm: 17, skippedOther: 0, openRows: [{ order: '#INN70980', topic: 'Incomplete Shipping Address', ageDays: 19 }] }] },
         clickup: { lists: [{ id: '901222538715', name: 'Founder Escalations', total: 6, overdue: 2, unassigned: 1, byStatus: { 'to do': 4, 'in progress': 2 }, tasks: [{ id: 'a', name: 'Chargeback #IN1988 – evidence pack', status: 'in progress', url: 'https://app.clickup.com', due: new Date(Date.now() - 86400e3).toISOString(), overdue: true, assignees: ['Khethiwe'] }, { id: 'b', name: 'Pre-order button test on Serentia', status: 'to do', url: 'https://app.clickup.com', due: new Date(Date.now() + 3 * 86400e3).toISOString(), overdue: false, assignees: [] }] }, { id: '901216052461', name: 'Ops Overview', total: 14, overdue: 3, unassigned: 2, byStatus: { 'to do': 9, 'in progress': 5 }, tasks: [{ id: 'c', name: 'Weekly Zendrop reconciliation', status: 'to do', url: 'https://app.clickup.com', due: new Date(Date.now() + 86400e3).toISOString(), overdue: false, assignees: ['Khethiwe'] }] }] },
       },
-      settings: { finished_source: 'shopify', finished_on_hand: null, packaging_on_hand: 3600, lead_finished_with_packaging: 10, lead_finished_without_packaging: 22, lead_packaging: 14, moq_finished: 2500, moq_packaging: 5000, unit_cost_finished: 4.1, unit_cost_packaging: 0.35, baseline_days: 14, scale_pct: 20, scale_days_default: 3, safety_days: 7, packaging_per_unit: 1, tracked_variant_ids: [], clickup_lists: [{ id: '901222538715', name: 'Founder Escalations' }, { id: '901216052461', name: 'Ops Overview' }], zendrop_sheet_id: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY' },
+      settings: { finished_source: 'shopify', finished_on_hand: null, packaging_on_hand: 3600, lead_finished_with_packaging: 10, lead_finished_without_packaging: 22, lead_packaging: 14, moq_finished: 2500, moq_packaging: 5000, unit_cost_finished: 4.1, unit_cost_packaging: 0.35, baseline_days: 14, scale_pct: 20, scale_days_default: 3, safety_days: 7, packaging_per_unit: 1, tracked_variant_ids: [], clickup_lists: [{ id: '901222538715', name: 'Founder Escalations' }, { id: '901216052461', name: 'Ops Overview' }], zendrop_sheet_id: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', inbound_stock: [{ id: 'a', item: 'finished', units: 2374, status: 'in_transit', to: 'Zendrop', eta: '2026-11-03', eta_text: 'early next week', note: 'Part 1 of 3,000.', source: 'Ava on Slack' }, { id: 'b', item: 'finished', units: 626, status: 'waiting_packaging', to: 'Zendrop', eta: null, eta_text: 'next batch', note: 'Held back: not enough bags.' }, { id: 'c', item: 'packaging', units: 4000, status: 'ordered', to: 'Capsule factory', eta: '2026-11-06', eta_text: 'early November', note: 'Bags for the next batches.' }] },
       settingsMeta: {},
       viewer: { name: 'Demo viewer', role: 'admin' },
     }
