@@ -402,3 +402,17 @@ footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display:
 .ser .salesbox textarea { width: 100%; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); color: var(--ink); }
 .ser .salesbox input[type=number] { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--surface); color: var(--ink); }
 .ser .salesbox input[type=file] { max-width: 100%; font-size: 12.5px; }
+
+/* Stock plan */
+.plan .pcols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.plan h3 { margin: 0 0 8px; font-size: 14px; }
+.plan .pcol p { margin: 6px 0; font-size: 13.5px; line-height: 1.5; }
+.plan .pverdict { padding: 8px 12px; border-radius: 10px; font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+.plan .pverdict.good { background: var(--good-bg); color: var(--good); }
+.plan .pverdict.warn { background: var(--warn-bg); color: var(--ink); }
+.plan .pverdict.bad { background: var(--bad-bg); color: var(--bad); }
+.plan .pnext { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--hair); }
+.plan .pnext .lbl { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.plan .bad-t { color: var(--bad); }
+.plan .pscale p { margin: 0; font-size: 13.5px; }
+.plan .ptl td { vertical-align: top; }

@@ -287,6 +287,149 @@
     return { curve, base, backlog, finished, finishedRaw, packaging, perUnit, safety, need30, sellPerDay, noSales, capped, coverLabel, coverF, coverF0, coverP, leadF, leadP, packagingOk, orderFinished, orderPackaging, orderFinishedBy, orderPackagingBy, verdict, reason, maxN, maxNLabel, stockout }
   }
 
+  // ---------- stock plan: day-by-day projection including pending stock ----------
+  // Free stock today (on hand minus units owed to unfulfilled orders), minus
+  // daily demand, plus each pending batch on its expected date. A batch that
+  // is waiting for bags gets an estimated date: the bags' ETA + the
+  // with-packaging lead time. Bags themselves never become sellable stock;
+  // they only decide how fast the next production run can be.
+  const PLAN_DAYS = 150
+  const dayStart = () => { const t = new Date(); t.setHours(0, 0, 0, 0); return t.getTime() }
+  const dayIdx = (iso) => Math.max(1, Math.round((new Date(iso + 'T00:00:00').getTime() - dayStart()) / 86400e3))
+  const fmtDayY = (dt) => (dt ? new Date(dt).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '–')
+  const ceil100 = (n) => Math.ceil(n / 100) * 100
+
+  function planArrivals(d) {
+    const S = d.settings
+    const pend = (Array.isArray(S.inbound_stock) ? S.inbound_stock : []).filter((x) => x.status !== 'received')
+    const bags = pend.filter((x) => x.item === 'packaging')
+    const bagsEta = bags.map((x) => x.eta).filter(Boolean).sort()[0] || null
+    const leadW = S.lead_finished_with_packaging ?? 10
+    const out = []
+    for (const x of pend.filter((x) => x.item === 'finished')) {
+      let eta = x.eta, estimated = false
+      if (!eta && bagsEta) { const t = new Date(bagsEta + 'T00:00:00'); t.setDate(t.getDate() + leadW); eta = t.toISOString().slice(0, 10); estimated = true }
+      out.push({ ...x, eta, estimated, day: eta ? dayIdx(eta) : null })
+    }
+    out.sort((a, b) => (a.day ?? 1e9) - (b.day ?? 1e9))
+    // Bags still free after the batches already waiting for them are made.
+    const bagUnits = bags.reduce((a, x) => a + (x.units || 0), 0)
+    const perUnit = S.packaging_per_unit ?? 1
+    const bagsReserved = out.filter((x) => x.status === 'waiting_packaging').reduce((a, x) => a + (x.units || 0) * perUnit, 0)
+    return { finished: out, bags, bagsEta, bagUnits, bagsSpare: Math.max(0, bagUnits + (d.inventory.packaging.units || 0) - bagsReserved), bagsOnHandKnown: d.inventory.packaging.units != null }
+  }
+
+  // Walk the days: stock level, first day it hits zero, and how short each batch arrives.
+  function simulate(start, curve, arrivals) {
+    let stock = start, outDay = null
+    const events = []
+    for (let k = 1; k <= Math.min(PLAN_DAYS, curve.length); k++) {
+      for (const a of arrivals) if (a.day === k) { events.push({ k, a, before: stock }); stock += a.units || 0 }
+      stock -= curve[k - 1]
+      if (outDay == null && stock < 0) outDay = k - 1 + (stock + curve[k - 1]) / curve[k - 1]
+    }
+    return { outDay, events, end: stock }
+  }
+
+  function stockPlan(d, dec, N) {
+    if (dec.finished == null || dec.noSales || !d.runRate) return null
+    const S = d.settings
+    const arr = planArrivals(d)
+    const dated = arr.finished.filter((x) => x.day != null)
+    const safety = S.safety_days ?? 7
+    const perUnit = S.packaging_per_unit ?? 1
+    const leadW = S.lead_finished_with_packaging ?? 10
+    const leadWo = S.lead_finished_without_packaging ?? 22
+    const scen = (curve, label) => {
+      const sim = simulate(dec.finished, curve, dated)
+      const out = sim.outDay
+      // Gaps: a batch that lands after stock already hit zero.
+      const late = sim.events.filter((e) => e.before < 0).map((e) => ({ a: e.a, short: Math.round(-e.before) }))
+      // Next order: must land `safety` days before the run-out, and cover 30 days + safety after landing.
+      let next = null
+      if (out != null) {
+        const landBy = Math.max(0, out - safety)
+        const bagsOk = arr.bagsSpare > 0
+        const needDays = (from) => sum(curve.slice(Math.floor(from)), 30 + safety)
+        let qty = ceil100(Math.max(0, needDays(landBy)))
+        if (S.moq_finished) qty = Math.max(S.moq_finished, qty)
+        const bagsNeeded = Math.ceil(qty * perUnit)
+        const lead = bagsOk && arr.bagsSpare >= bagsNeeded ? leadW : leadWo
+        const orderBy = landBy - lead
+        const bagShort = Math.max(0, bagsNeeded - arr.bagsSpare)
+        next = { landBy, orderBy, lead, qty, bagsNeeded, bagShort, bagsOrderBy: S.lead_packaging != null ? orderBy - S.lead_packaging : null, lateByDays: orderBy < 0 ? Math.ceil(-orderBy) : 0 }
+      }
+      return { label, curve, sim, out, late, next, perDay: sum(curve, 30) / 30 }
+    }
+    const steady = scen(dec.base, 'No scaling')
+    const scaled = N > 0 ? scen(dec.curve, `Scale ${N} day${N === 1 ? '' : 's'} at ${S.scale_pct}%/day`) : null
+    // How many scale days the plan can take without running out before an order placed today could land.
+    let maxN = 0
+    const guard = leadW + safety
+    for (let n = 0; n <= MAX_SCALE; n++) {
+      const sim = simulate(dec.finished, demandCurve(d, n), dated)
+      if (sim.outDay == null || sim.outDay >= guard) maxN = n; else break
+    }
+    return { arr, steady, scaled, maxN, guard, safety, leadW, leadWo }
+  }
+
+  function planSection(d, dec) {
+    const N = state.scaleDays
+    const P = stockPlan(d, dec, N)
+    const sec = h('section', { class: 'section plan' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Stock plan' }), h('span', { class: 'why', text: 'Is what is on order enough, and arriving in time? What to order next, and by when. Includes pending stock at its expected date.' })))
+    if (!P) { sec.append(h('div', { class: 'setup' }, h('p', { text: dec.reason || 'Needs a finished-goods count and sales history.' }))); return sec }
+    const S = d.settings
+    const day = (k) => addDays(k)
+    const A = P.arr
+    const one = (sc) => {
+      const pending = A.finished.reduce((a, x) => a + (x.units || 0), 0)
+      const lines = []
+      lines.push(h('p', null, h('b', { text: `${fmtInt(dec.finished)} free units today` }), ` (${fmtInt(dec.finishedRaw)} on hand, ${fmtInt(dec.backlog)} already owed to unfulfilled orders). Selling about `, h('b', { text: `${fmtInt(sc.perDay)} a day` }), ` on average over the next 30 days.`))
+      if (pending) lines.push(h('p', null, `Pending: ${A.finished.map((x) => `${fmtInt(x.units)} ${x.day != null ? `${x.estimated ? 'estimated ' : ''}on ${fmtDayY(new Date(x.eta + 'T00:00:00'))}` : '(no date yet)'}`).join(' + ')}.`))
+      const enough = sc.out == null
+      const verdict = enough ? ['good', `Enough for the next ${PLAN_DAYS} days.`]
+        : sc.late.length ? ['bad', `Not enough in time: stock runs out before a batch lands.`]
+        : ['warn', `Pending stock arrives in time, but runs out on ${fmtDayY(day(sc.out))}.`]
+      lines.unshift(h('div', { class: 'pverdict ' + verdict[0], text: verdict[1] }))
+      for (const g of sc.late) lines.push(h('p', { class: 'bad-t' }, `Out of stock before the ${fmtInt(g.a.units)} batch lands on ${fmtDayY(new Date(g.a.eta + 'T00:00:00'))}: about ${fmtInt(g.short)} orders would wait. Push Zendrop/Ava for an earlier date, or slow ads until it lands.`))
+      if (sc.out != null) lines.push(h('p', null, 'With everything pending, stock lasts until ', h('b', { text: fmtDayY(day(sc.out)) }), ` (${fmt1(sc.out)} days).`))
+      const nx = sc.next
+      if (nx) {
+        const orderDate = nx.orderBy <= 0 ? 'today' : fmtDayY(day(nx.orderBy))
+        lines.push(h('div', { class: 'pnext' },
+          h('div', { class: 'lbl', text: 'Next order' }),
+          h('p', null, h('b', { text: `${fmtInt(nx.qty)} finished units` }), nx.orderBy <= 0 ? ', ordered ' : ', ordered by ', h('b', { class: nx.orderBy <= 0 ? 'bad-t' : '', text: orderDate }), `, to land by ${fmtDayY(day(nx.landBy))} (${nx.lead}-day lead ${nx.lead === P.leadW ? 'with bags ready' : 'because bags are not ready'}).`, nx.lateByDays ? h('span', { class: 'bad-t', text: ` That date has passed: ordered today it lands ${nx.lateByDays} days later than it should.` }) : null),
+          h('p', { class: 'muted', text: `Quantity covers 30 days + ${P.safety} days safety after it lands, at the demand above${S.moq_finished ? `, MOQ ${fmtInt(S.moq_finished)}` : ''}.` }),
+          h('p', null, h('b', { text: 'Bags: ' }), nx.bagShort
+            ? `the order needs ${fmtInt(nx.bagsNeeded)} bags and about ${fmtInt(A.bagsSpare)} will be spare after the waiting batch, so order `
+            : `the order needs ${fmtInt(nx.bagsNeeded)} bags and about ${fmtInt(A.bagsSpare)} will be spare after the waiting batch: enough, no bag order needed.`,
+            nx.bagShort ? h('b', { text: `${fmtInt(ceil100(nx.bagShort))} more bags` }) : null,
+            nx.bagShort ? (nx.bagsOrderBy != null ? ` by ${nx.bagsOrderBy <= 0 ? 'today' : fmtDayY(day(nx.bagsOrderBy))} (${S.lead_packaging}-day bag lead time).` : '. Set the bag lead time in Settings to get an order-by date.') : null,
+            A.bagsOnHandKnown ? null : h('span', { class: 'muted', text: ' (Bags already at the factory are not counted: enter them in Settings.)' })),
+          nx.bagShort && A.bagsSpare > 0 ? h('p', null, h('b', { text: 'Faster option: ' }), `split it. Make ${fmtInt(Math.floor(A.bagsSpare / (S.packaging_per_unit ?? 1)))} units with the spare bags on the ${P.leadW}-day lead (order by ${nx.landBy - P.leadW <= 0 ? 'today' : fmtDayY(day(nx.landBy - P.leadW))}), and the remaining ${fmtInt(Math.max(0, nx.qty - Math.floor(A.bagsSpare / (S.packaging_per_unit ?? 1))))} once the new bags are in.`) : null))
+      }
+      return h('div', { class: 'card pcol' }, h('h3', { text: sc.label }), ...lines)
+    }
+    const cols = h('div', { class: 'pcols' }, one(P.steady), P.scaled ? one(P.scaled) : null)
+    sec.append(cols)
+    // Timeline of what happens when, for the scenario on the slider.
+    const sc = P.scaled || P.steady
+    const rows = []
+    rows.push([fmtDayY(addDays(0)), 'Today: free stock', '', fmtInt(dec.finished)])
+    for (const e of sc.sim.events) rows.push([fmtDayY(new Date(e.a.eta + 'T00:00:00')), `${e.a.item === 'finished' ? 'Batch lands' : e.a.item}${e.a.estimated ? ' (estimated)' : ''}${e.a.note ? ': ' + e.a.note : ''}`, '+' + fmtInt(e.a.units), `${fmtInt(Math.max(0, e.before))} → ${fmtInt(Math.max(0, e.before) + e.a.units)}${e.before < 0 ? ` (${fmtInt(-e.before)} orders waiting)` : ''}`])
+    for (const b of A.bags) rows.push([b.eta ? fmtDayY(new Date(b.eta + 'T00:00:00')) : '–', `Bags reach the factory${b.note ? ': ' + b.note : ''}`, '+' + fmtInt(b.units) + ' bags', '(not sellable)'])
+    if (sc.next) rows.push([fmtDayY(day(Math.max(0, sc.next.orderBy))), sc.next.orderBy <= 0 ? 'Place the next finished-goods order (today: the ideal date has passed)' : 'Place the next finished-goods order (latest date)', fmtInt(sc.next.qty), ''])
+    if (sc.out != null) rows.push([fmtDayY(day(sc.out)), 'Runs out if nothing more is ordered', '', '0'])
+    // Stable sort by date; the 'Today: free stock' row stays first on its day.
+    rows.sort((a, b) => (Date.parse(a[0]) || 0) - (Date.parse(b[0]) || 0) || (b[1].startsWith('Today') - a[1].startsWith('Today')))
+    sec.append(h('div', { class: 'card', style: 'margin-top:14px' }, h('h3', { text: `Timeline (${sc.label.toLowerCase()})` }), h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl ptl' },
+      h('thead', null, h('tr', null, ['Date', 'What happens', 'Units', 'Free stock'].map((x, i) => h('th', { class: i >= 2 ? 'num' : '', text: x })))),
+      h('tbody', null, rows.map((r) => h('tr', null, r.map((c, i) => h('td', { class: i >= 2 ? 'num' : '', text: c })))))))))
+    sec.append(h('div', { class: 'pscale card', style: 'margin-top:14px' }, h('h3', { text: 'How far can we scale?' }),
+      h('p', null, `At ${S.scale_pct}%/day, stock (with the pending batches) holds for `, h('b', { text: `${P.maxN}${P.maxN === MAX_SCALE ? '+' : ''} day${P.maxN === 1 ? '' : 's'} of scaling` }), ` without running out before an order placed today could land (${P.leadW}-day lead + ${P.safety} days safety). Move the scale slider below to test other runs; both columns above update.`)))
+    return sec
+  }
+
   // ---------- charts ----------
   const tip = $('#tooltip')
   function showTip(x, y, title, rows) {
@@ -486,6 +629,7 @@
     if (state.scaleDays == null) state.scaleDays = d.settings.scale_days_default ?? 3
     const dec = decide(d, state.scaleDays)
     wrap.append(decisionStrip(d, dec))
+    wrap.append(planSection(d, dec))
     wrap.append(setupBanners(d))
     wrap.append(fulfilmentSection(d))
     wrap.append(inventorySection(d, dec))
