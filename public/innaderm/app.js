@@ -1631,13 +1631,15 @@
       tile('Units at Zendrop', fmtInt(t.onHand), null, h('div', { class: 'delta' }, h('span', { class: 'muted', text: d.updated ? `Zendrop updated ${dayTxt(d.updated)}` : '' })), null),
       tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'units', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : man ? `report, ${man.days} days${t.rate ? ` · ~${fmtInt(t.onHand / t.rate)} days of total stock` : ''}` : 'needs sales' })), null),
       tile('Subscriber renewals', t.renew30 == null ? '–' : fmtInt(t.renew30), t.renew30 == null ? '' : 'units / 30d', h('div', { class: 'delta' }, h('span', { class: src.loop?.error ? 'down' : 'muted', text: src.loop?.error ? 'Loop error' : src.loop?.manual ? `${fmtInt(t.subscriptions)} subscriptions · ${src.loop.snapshot ? 'Loop snapshot ' + fmtDayY(src.loop.savedAt) : 'pasted ' + agoTxt(src.loop.savedAt)}` : src.loop?.configured ? `${fmtInt(t.subscriptions)} subscriptions renewing` : 'paste Loop rows below' })), null),
+      tile(`Needed to ${d.demand?.through ? new Date(d.demand.through + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '31 Dec'}`, t.needThrough == null ? '–' : fmtInt(t.needThrough), t.needThrough == null ? '' : 'units', h('div', { class: 'delta' }, h('span', { class: t.shortThrough ? 'down' : 'muted', text: t.needThrough == null ? 'needs sales per shade' : t.shortThrough ? `short ${fmtInt(t.shortThrough)} across shades` : 'covered by stock on hand' })), null),
       tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant + (x.oversold ? ` (−${fmtInt(x.oversold)})` : '')).join(', ') || 'none' })), null),
       tile('Reorder now', fmtInt(now.length + out.length), now.length + out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
       tile('Suggested order', t.suggest ? fmtInt(t.suggest) : '0', 'units', h('div', { class: 'delta' }, h('span', { class: t.belowMoq ? 'down' : 'muted', text: t.moq ? `MOQ ${fmtInt(t.moq)}${t.belowMoq ? ': top up to the MOQ' : ''}` : '' })), null)))
     const lead = S[0]?.leadDays ?? 10
+    const throughLbl = d.demand?.through ? new Date(d.demand.through + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '31 Dec'
     const part = (x, kanary) => x.parts.filter((p) => /kanary/i.test(p.product) === kanary).reduce((a, p) => (p.count == null ? a : (a ?? 0) + p.count), null)
     const tbl = h('table', { class: 'tbl stbl' },
-      h('thead', null, h('tr', null, ['Shade', 'Original SKU', 'Kanary SKU', 'On hand', 'Sold / day', 'Renewals 30d', 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 9 ? 'num' : '', title: x === 'Renewals 30d' ? 'Units due to Loop subscribers in the next 30 days' : null, text: x })))),
+      h('thead', null, h('tr', null, ['Shade', 'Original SKU', 'Kanary SKU', 'On hand', 'Sold / day', 'Renewals 30d', `Need to ${throughLbl}`, 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 10 ? 'num' : '', title: x === 'Renewals 30d' ? 'Units due to Loop subscribers in the next 30 days' : i === 6 ? 'Units needed from today to that date at the planned demand (campaign + Black Friday), plus any oversold' : null, text: x })))),
       h('tbody', null, S.map((x) => h('tr', null,
         h('td', null, h('b', { text: x.variant })),
         h('td', { class: 'num muted', text: fmtInt(part(x, false)) }),
@@ -1645,11 +1647,13 @@
         h('td', { class: 'num' }, h('b', { text: fmtInt(x.onHand) }), x.oversold ? ' ' : null, x.oversold ? h('span', { class: 'tag bad', title: 'Zendrop shows a negative count: orders taken with no stock behind them', text: `oversold ${fmtInt(x.oversold)}` }) : null),
         h('td', { class: 'num', title: x.rateSource === 'loop' ? 'Loop renewals only (a floor): real sales are higher' : x.sold != null ? `${fmtInt(x.sold)} units in ${x.rateSource === 'manual' ? man?.days : d.settings.baselineDays} days (${x.rateSource === 'manual' ? 'pasted report' : 'Shopify'})` : 'Needs per-shade sales' }, x.rate == null ? '–' : fmt1(x.rate), x.rateSource === 'loop' ? h('small', { class: 'muted', title: 'Renewals only: real sales are higher', text: ' renewals' }) : null),
         h('td', { class: 'num', title: x.renewBeforeRestock != null ? `${fmtInt(x.renewBeforeRestock)} due within the ${x.leadDays}-day lead time` : 'Needs SERENTIA_LOOP_TOKEN' }, x.renew30 == null ? '–' : fmtInt(x.renew30), x.renewBeforeRestock > x.onHand ? ' ' : null, x.renewBeforeRestock > x.onHand ? h('span', { class: 'tag bad', title: 'More renewals due before a new batch can land than units on hand', text: 'short' }) : null),
-        h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : fmtInt(x.cover) }),
-        h('td', { class: 'num', text: x.status === 'out' ? 'now' : dayTxt(x.runsOut) }),
-        h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : dayTxt(x.reorderBy) }),
+        h('td', { class: 'num' }, x.needThrough == null ? '–' : fmtInt(x.needThrough), x.shortThrough ? ' ' : null, x.shortThrough ? h('span', { class: 'tag bad', title: `On hand covers ${fmtInt(x.onHand)} of ${fmtInt(x.needThrough)}`, text: `short ${fmtInt(x.shortThrough)}` }) : null),
+        h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : x.cover >= 365 ? '365+' : fmtInt(x.cover) }),
+        h('td', { class: 'num', text: x.status === 'out' ? 'now' : x.cover >= 365 ? '1+ year' : dayTxt(x.runsOut) }),
+        h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : x.cover != null && x.cover - x.leadDays - d.settings.safetyDays >= 365 ? '1+ year' : dayTxt(x.reorderBy) }),
         h('td', null, tag(SER_STATUS[x.status][0], SER_STATUS[x.status][1])),
         h('td', { class: 'num', text: x.suggest ? fmtInt(x.suggest) : '–' })))))
+    wrap.append(demandBox(d.demand))
     wrap.append(h('section', { class: 'section' },
       h('div', { class: 'sec-head' }, h('h2', { text: 'Elixir+ Cream by shade' }), h('span', { class: 'why', text: `Reorder point = ${lead}-day lead time + ${d.settings.safetyDays} days safety. A suggested order covers ${d.settings.targetDays} days after it lands.` })),
       h('div', { class: 'card', style: 'overflow:auto' }, S.length ? tbl : h('p', { class: 'muted', text: 'No shades found in the Zendrop Inventory tab.' }))))
@@ -1719,6 +1723,29 @@
     return card
   }
 
+  // Planned demand: campaign uplift and Black Friday, shared by everyone.
+  function demandBox(dm) {
+    dm = dm || {}
+    const P = (state.serPlan ||= { upliftPct: dm.upliftPct ?? 0, bfFrom: dm.bfFrom || '', bfTo: dm.bfTo || '', bfMultiplier: dm.bfMultiplier ?? 1, through: dm.through || '' })
+    const msg = h('span', { class: 'msg' })
+    const inp = (k, type, w, extra = {}) => h('input', { type, value: P[k], style: `width:${w}`, oninput: (e) => { P[k] = e.target.value }, ...extra })
+    const save = h('button', { class: 'btn sm', text: 'Save plan', onclick: async () => {
+      if (DEMO) { msg.textContent = 'Demo: nothing saved.'; return }
+      save.disabled = true; msg.textContent = 'Saving…'
+      try { await api('/api/serentia/plan', { method: 'POST', body: { ...P, upliftPct: Number(P.upliftPct), bfMultiplier: Number(P.bfMultiplier) } }); state.serPlan = null; await loadSerentia() } catch (e) { msg.textContent = e.message; save.disabled = false }
+    } })
+    return h('div', { class: 'card dplan', style: 'margin-top:16px' },
+      h('h3', { text: 'Planned demand' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 10px;font-size:12.5px' }, 'Measured sales per shade × these factors drive days of cover, the Q4 need and suggestions. ',
+        dm.saved ? `Saved ${agoTxt(dm.savedAt)} by ${dm.by || '?'}.` : h('b', { class: 'bad-t', text: 'These are starting guesses, not history: set them from last year\'s Black Friday and the campaign plan.' })),
+      h('div', { class: 'dgrid' },
+        h('label', null, 'Campaign uplift ', inp('upliftPct', 'number', '80px', { min: -90, max: 1000, step: 5 }), ' % on every day'),
+        h('label', null, 'Black Friday ', inp('bfFrom', 'date', '150px'), ' to ', inp('bfTo', 'date', '150px')),
+        h('label', null, 'Black Friday sells ', inp('bfMultiplier', 'number', '70px', { min: 1, max: 50, step: 0.5 }), ' × normal'),
+        h('label', null, 'Plan stock through ', inp('through', 'date', '150px'))),
+      h('div', { class: 'actions', style: 'display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap' }, save, msg))
+  }
+
   // Loop subscription rows pasted from the Loop admin, until SERENTIA_LOOP_TOKEN exists.
   function renewalsBox(L) {
     state.serLoop = state.serLoop || { text: '' }
@@ -1753,11 +1780,12 @@
         suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - onHand + oversold) / 100) * 100 : 0 }
     }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
     const suggest = shades.reduce((a, x) => a + x.suggest, 0)
-    return { settings: { baselineDays: 31, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
+    for (const x of shades) { const days = Math.round((Date.parse('2026-12-31') - Date.now()) / 864e5) + 1; x.needThrough = Math.ceil(x.rate * (Math.max(0, days) + 5 * 2) + x.oversold); x.shortThrough = Math.max(0, x.needThrough - x.onHand) }
+    return { demand: { upliftPct: 0, bfFrom: '2026-11-27', bfTo: '2026-12-01', bfMultiplier: 3, through: '2026-12-31', saved: false }, settings: { baselineDays: 31, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
       sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: false }, loop: { configured: true, manual: true, subscriptions: 64, monthly: 73, units: 59, savedAt: new Date().toISOString(), by: 'Demo' },
         manual: { days: 31, period: '26 Sept to 26 Oct 2026', savedAt: new Date().toISOString(), by: 'Demo', creamTotal: rows.reduce((a, r) => a + Math.round(r.rate * 31), 0), shadeLevel: true, matched: rows.map((r) => ({ shade: r.variant, tubes: Math.round(r.rate * 31) })), skipped: ['Serentia™ Essence Blending Brush', 'Hydra-Prep Cream'] } },
       others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0 }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64 }],
-      shades, totals: { renew30: rows.reduce((a, r) => a + r.renew30, 0), subscriptions: 64, onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
+      shades, totals: { needThrough: shades.reduce((a, x) => a + x.needThrough, 0), shortThrough: shades.reduce((a, x) => a + x.shortThrough, 0), renew30: rows.reduce((a, r) => a + r.renew30, 0), subscriptions: 64, onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
   }
 
   // ---------- Refund matrix (public/innaderm/refund.js) ----------
