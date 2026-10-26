@@ -147,6 +147,7 @@ the Serentia Shopify store (variables below).
 |---|---|---|
 | `SERENTIA_SHOPIFY_STORE` | for sales | The store's `xxxx.myshopify.com` domain. |
 | `SERENTIA_SHOPIFY_CLIENT_ID` / `SERENTIA_SHOPIFY_CLIENT_SECRET` | for sales | A Dev Dashboard app on the Serentia store with `read_orders`. Or `SERENTIA_SHOPIFY_TOKEN` (legacy `shpat_`). |
+| `SERENTIA_LOOP_TOKEN` | no | Loop admin API token for the Serentia store (Loop admin → Settings → API Tokens). Adds renewals due in the next 30 days per shade, flags shades with more renewals due within the lead time than stock, and uses renewals as a floor on daily demand. |
 | `SERENTIA_ZENDROP_SHEET_ID` | no | Defaults to the Serene Zendrop sheet. |
 | `SERENTIA_ZENDROP_INVENTORY_GID` | no | The Inventory tab's `gid=` from its URL; without it the tab is read by name. |
 

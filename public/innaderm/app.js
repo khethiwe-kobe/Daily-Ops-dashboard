@@ -1460,22 +1460,24 @@
     const t = d.totals || {}
     const S = d.shades || []
     const out = S.filter((x) => x.status === 'out'), now = S.filter((x) => x.status === 'reorder'), soon = S.filter((x) => x.status === 'soon')
-    wrap.append(h('div', { class: 'kpis', style: 'margin-top:16px' },
+    wrap.append(h('div', { class: 'kpis', style: 'margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(165px,1fr))' },
       tile('Tubes at Zendrop', fmtInt(t.onHand), null, h('div', { class: 'delta' }, h('span', { class: 'muted', text: d.updated ? `Zendrop updated ${d.updated}` : '' })), null),
       tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'tubes', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : man ? `report, ${man.days} days${t.rate ? ` · ~${fmtInt(t.onHand / t.rate)} days of total stock` : ''}` : 'needs sales' })), null),
+      tile('Subscriber renewals', t.renew30 == null ? '–' : fmtInt(t.renew30), t.renew30 == null ? '' : 'tubes / 30d', h('div', { class: 'delta' }, h('span', { class: src.loop?.error ? 'down' : 'muted', text: src.loop?.error ? 'Loop error' : src.loop?.configured ? `${fmtInt(t.subscriptions)} subscriptions renewing` : 'needs Loop token' })), null),
       tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant + (x.oversold ? ` (−${fmtInt(x.oversold)})` : '')).join(', ') || 'none' })), null),
       tile('Reorder now', fmtInt(now.length + out.length), now.length + out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
       tile('Suggested order', t.suggest ? fmtInt(t.suggest) : '0', 'tubes', h('div', { class: 'delta' }, h('span', { class: t.belowMoq ? 'down' : 'muted', text: t.moq ? `MOQ ${fmtInt(t.moq)}${t.belowMoq ? ': top up to the MOQ' : ''}` : '' })), null)))
     const lead = S[0]?.leadDays ?? 10
     const part = (x, kanary) => x.parts.filter((p) => /kanary/i.test(p.product) === kanary).reduce((a, p) => (p.count == null ? a : (a ?? 0) + p.count), null)
     const tbl = h('table', { class: 'tbl stbl' },
-      h('thead', null, h('tr', null, ['Shade', 'Original SKU', 'Kanary SKU', 'On hand', 'Sold / day', 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 8 ? 'num' : '', text: x })))),
+      h('thead', null, h('tr', null, ['Shade', 'Original SKU', 'Kanary SKU', 'On hand', 'Sold / day', 'Renewals 30d', 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 9 ? 'num' : '', title: x === 'Renewals 30d' ? 'Tubes due to Loop subscribers in the next 30 days' : null, text: x })))),
       h('tbody', null, S.map((x) => h('tr', null,
         h('td', null, h('b', { text: x.variant })),
         h('td', { class: 'num muted', text: fmtInt(part(x, false)) }),
         h('td', { class: 'num muted', text: fmtInt(part(x, true)) }),
         h('td', { class: 'num' }, h('b', { text: fmtInt(x.onHand) }), x.oversold ? ' ' : null, x.oversold ? h('span', { class: 'tag bad', title: 'Zendrop shows a negative count: orders taken with no stock behind them', text: `oversold ${fmtInt(x.oversold)}` }) : null),
-        h('td', { class: 'num', title: x.sold != null ? `${fmtInt(x.sold)} tubes in ${x.rateSource === 'manual' ? man?.days : d.settings.baselineDays} days (${x.rateSource === 'manual' ? 'pasted report' : 'Shopify'})` : 'Needs per-shade sales', text: x.rate == null ? '–' : fmt1(x.rate) }),
+        h('td', { class: 'num', title: x.rateSource === 'loop' ? 'Loop renewals only (a floor): real sales are higher' : x.sold != null ? `${fmtInt(x.sold)} tubes in ${x.rateSource === 'manual' ? man?.days : d.settings.baselineDays} days (${x.rateSource === 'manual' ? 'pasted report' : 'Shopify'})` : 'Needs per-shade sales' }, x.rate == null ? '–' : fmt1(x.rate), x.rateSource === 'loop' ? h('small', { class: 'muted', title: 'Renewals only: real sales are higher', text: ' renewals' }) : null),
+        h('td', { class: 'num', title: x.renewBeforeRestock != null ? `${fmtInt(x.renewBeforeRestock)} due within the ${x.leadDays}-day lead time` : 'Needs SERENTIA_LOOP_TOKEN' }, x.renew30 == null ? '–' : fmtInt(x.renew30), x.renewBeforeRestock > x.onHand ? ' ' : null, x.renewBeforeRestock > x.onHand ? h('span', { class: 'tag bad', title: 'More renewals due before a new batch can land than tubes on hand', text: 'short' }) : null),
         h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : fmtInt(x.cover) }),
         h('td', { class: 'num', text: x.status === 'out' ? 'now' : dayTxt(x.runsOut) }),
         h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : dayTxt(x.reorderBy) }),
@@ -1484,6 +1486,7 @@
     wrap.append(h('section', { class: 'section' },
       h('div', { class: 'sec-head' }, h('h2', { text: 'Elixir+ Cream by shade' }), h('span', { class: 'why', text: `Reorder point = ${lead}-day lead time + ${d.settings.safetyDays} days safety. A suggested order covers ${d.settings.targetDays} days after it lands.` })),
       h('div', { class: 'card', style: 'overflow:auto' }, S.length ? tbl : h('p', { class: 'muted', text: 'No shades found in the Zendrop Inventory tab.' }))))
+    if (src.loop?.error) wrap.append(h('div', { class: 'banner bad', text: `Serentia Loop: ${src.loop.error}` }))
     if (!src.shopify.configured) wrap.append(salesBox(man))
     const notes = []
     const over = S.filter((x) => x.oversold)
@@ -1491,6 +1494,9 @@
     const zero = out.filter((x) => !x.oversold)
     if (zero.length) notes.push(`${zero.map((x) => x.variant).join(', ')} ${zero.length === 1 ? 'is' : 'are'} at zero. Make sure the pre-order widget is live for ${zero.length === 1 ? 'it' : 'them'} (Sell when out of stock on, real batch dates), or customers buy a shade that cannot ship.`)
     notes.push('Each shade is the original Elixir+ listing (3064479) plus the "Kanary new product" listing (3373424) added together. Stock moved to the Kanary rows in October.')
+    if (!src.loop?.configured) notes.push('Loop not connected: subscriber renewals per shade appear once SERENTIA_LOOP_TOKEN is in Vercel (Loop admin → Settings → API Tokens on the Serentia store).')
+    else if (S.some((x) => x.renewBeforeRestock > x.onHand)) notes.push(`Short for subscribers: ${S.filter((x) => x.renewBeforeRestock > x.onHand).map((x) => x.variant).join(', ')} ${S.filter((x) => x.renewBeforeRestock > x.onHand).length === 1 ? 'has' : 'have'} more renewals due within the lead time than tubes on hand. Reorder now, or move those subscribers' next date in Loop.`)
+    if (src.loop?.untitled) notes.push(`${fmtInt(src.loop.untitled)} renewal units in Loop had no product title, so they are not in any shade.`)
     if (S.some((x) => x.status === 'unknown')) notes.push('Days of cover and reorder dates need sales per shade: add the Serentia Shopify keys in Vercel.')
     if (src.shopify.truncated) notes.push('More than 3,000 orders in the window: sales are undercounted.')
     notes.push('Bundles: a variant title like "Buy 2 Get 1" counts as 3 tubes. Shopify variant names must contain the shade name.')
@@ -1498,6 +1504,7 @@
       h('div', { class: 'card' }, h('h3', { text: 'Read this first' }), h('ul', { class: 'notes' }, notes.map((n) => h('li', { text: n })))),
       h('div', { class: 'card' }, h('h3', { text: 'Sources' }), h('ul', { class: 'notes' },
         h('li', null, 'Stock: Zendrop sheet, Inventory tab ', h('a', { href: `https://docs.google.com/spreadsheets/d/${src.zendrop.sheetId}/edit`, target: '_blank', rel: 'noopener', text: 'open' }), src.zendrop.cachedAt ? ` · read ${agoTxt(src.zendrop.cachedAt)}` : ''),
+        h('li', { text: src.loop?.configured ? `Renewals: Loop${src.loop.cachedAt ? `, read ${agoTxt(src.loop.cachedAt)}` : ''}` : 'Renewals: Loop not connected' }),
         h('li', null, 'Live count: ', h('a', { href: 'https://app.zendrop.com/inventory', target: '_blank', rel: 'noopener', text: 'app.zendrop.com/inventory' })),
         h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : man ? `Sales: Shopify report pasted ${agoTxt(man.savedAt)} (${man.days} days)` : 'Sales: not connected yet' }))),
       (d.others || []).length ? h('div', { class: 'card' }, h('h3', { text: 'Other products at Zendrop' }), tableView(['Product', 'SKU', 'Count'], d.others.map((o) => [`${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''}`, o.sku, fmtInt(o.count)]))) : null))
@@ -1545,7 +1552,8 @@
 
   function demoSerentia() {
     // Counts from the Zendrop sheet on 23 Oct 2026; the sales rates are made up for the demo.
-    const mk = (variant, orig, kan, rate) => ({ variant, parts: [{ product: 'Serentia Elixir+ Cream', count: orig }, { product: 'Kanary new product', count: kan }].filter((p) => p.count != null), rate, leadDays: 10, moq: 2500 })
+    const RENEW = { Ivory: 260, 'Buff Beige': 410, 'Warm Honey': 220, 'Honey Almond': 95, 'Caramel Glow': 130, 'Deep Mocha': 40, Hazelnut: 0 }
+    const mk = (variant, orig, kan, rate) => ({ variant, renew30: RENEW[variant], renewBeforeRestock: Math.round(RENEW[variant] / 3), parts: [{ product: 'Serentia Elixir+ Cream', count: orig }, { product: 'Kanary new product', count: kan }].filter((p) => p.count != null), rate, leadDays: 10, moq: 2500 })
     const rows = [mk('Ivory', 0, 5018, 41), mk('Buff Beige', 0, 3861, 63), mk('Warm Honey', 0, 4023, 38), mk('Honey Almond', 0, -28, 19), mk('Caramel Glow', 140, 1911, 22), mk('Deep Mocha', 857, 1952, 9), mk('Hazelnut', null, 1943, 6)]
     const now = Date.now(), point = 17
     const shades = rows.map((r) => {
@@ -1558,10 +1566,10 @@
     }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
     const suggest = shades.reduce((a, x) => a + x.suggest, 0)
     return { settings: { baselineDays: 14, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
-      sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: false },
+      sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: false }, loop: { configured: true, subscriptions: 812, cachedAt: new Date().toISOString() },
         manual: { days: 14, period: 'demo', savedAt: new Date().toISOString(), by: 'Demo', creamTotal: rows.reduce((a, r) => a + r.rate * 14, 0), shadeLevel: true, matched: rows.map((r) => ({ shade: r.variant, tubes: r.rate * 14 })), skipped: ['Serentia™ Essence Blending Brush', 'Hydra-Prep Cream'] } },
       others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0 }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64 }],
-      shades, totals: { onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
+      shades, totals: { renew30: rows.reduce((a, r) => a + r.renew30, 0), subscriptions: 812, onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
   }
 
   // ---------- Refund matrix (public/innaderm/refund.js) ----------
