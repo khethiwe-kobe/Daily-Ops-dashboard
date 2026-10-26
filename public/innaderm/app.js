@@ -873,7 +873,7 @@
         F('cs_autodraft_signature', 'Auto-draft sign-off', 'name on drafts the system writes', 'text')),
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Save inputs', onclick: save }), msg),
       h('h3', { text: 'Access keys' }),
-      h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 8px', text: 'One key per person. Revoking a key signs that person out everywhere. The admin key from Vercel (INNADERM_ADMIN_KEY) is listed once it has been used.' }),
+      h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 8px', text: 'One key per person. Revoking a key signs that person out everywhere. The admin key from Vercel (INNADERM_ADMIN_KEY) is listed under your name once it has been used.' }),
       h('div', { class: 'form' }, h('div', { class: 'field' }, h('label', { text: 'Name' }), keyName), h('div', { class: 'field' }, h('label', { text: 'Role' }), keyRole)),
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Issue key', onclick: issue })),
       state.newKey ? h('div', { class: 'newkey' }, `New key for ${state.newKey.name}. Copy it now; it is not shown again.`, h('code', { text: state.newKey.key }), h('button', { class: 'btn sm ghost', text: 'Copy', onclick: () => navigator.clipboard?.writeText(state.newKey.key) })) : null,

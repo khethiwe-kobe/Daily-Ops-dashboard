@@ -115,6 +115,7 @@ stored hashed in Postgres (`inn_*` tables, created on first use).
 | Name | Required | Notes |
 |---|---|---|
 | `INNADERM_ADMIN_KEY` | yes | Long random string (12+ chars). Bootstrap admin key; shows in the key list once used. |
+| `INNADERM_ADMIN_NAME` | no | Name shown for the admin key (header, key list, audit log). Defaults to `Khethiwe`. |
 | `INNADERM_SHOPIFY_CLIENT_ID` | yes* | Client ID of a Shopify Dev Dashboard app installed on the Innaderm store with `read_orders`, `read_fulfillments`, `read_products`, `read_inventory`, `read_locations`. Access tokens are fetched with the client credentials grant (they last about 24h) and cached in `inn_cache`. |
 | `INNADERM_SHOPIFY_CLIENT_SECRET` | yes* | Client secret of the same app. |
 | `INNADERM_SHOPIFY_TOKEN` | no* | Alternative to the two above: a permanent `shpat_` token from a legacy custom app made in the store admin before 2026. Takes precedence when set. |
