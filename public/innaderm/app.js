@@ -1453,14 +1453,16 @@
     if (!d) { if (!state.serError) wrap.append(h('div', { class: 'banner info', text: 'Loading Serentia stock…' })); return wrap }
     const src = d.sources
     if (src.zendrop.error) wrap.append(h('div', { class: 'banner bad', text: `Zendrop sheet: ${src.zendrop.error}${src.zendrop.stale ? ' (showing the last copy)' : ''}` }))
-    if (!src.shopify.configured) wrap.append(h('div', { class: 'banner' }, h('b', { text: 'Sales not connected. ' }), 'Days of cover use Zendrop\'s own estimate, which is often 0 or blank. Add the Serentia Shopify keys in Vercel (SERENTIA_SHOPIFY_STORE plus CLIENT_ID and CLIENT_SECRET, scope read_orders) for real sales per shade.'))
+    const man = src.manual
+    if (!src.shopify.configured && !man) wrap.append(h('div', { class: 'banner' }, h('b', { text: 'No sales yet. ' }), 'Upload a Shopify sales report in the box below the table, or add the Serentia Shopify keys in Vercel for live sales.'))
+    else if (!src.shopify.configured && man) wrap.append(h('div', { class: 'banner info' }, h('b', { text: 'Sales from a pasted Shopify report' }), ` · ${man.period || `last ${man.days} days`} · saved ${agoTxt(man.savedAt)} by ${man.by || '?'}${man.shadeLevel ? '' : ' · totals only: upload the report split by variant for per-shade dates'}`))
     else if (src.shopify.error) wrap.append(h('div', { class: 'banner bad', text: `Serentia Shopify: ${src.shopify.error}` }))
     const t = d.totals || {}
     const S = d.shades || []
     const out = S.filter((x) => x.status === 'out'), now = S.filter((x) => x.status === 'reorder'), soon = S.filter((x) => x.status === 'soon')
     wrap.append(h('div', { class: 'kpis', style: 'margin-top:16px' },
       tile('Tubes at Zendrop', fmtInt(t.onHand), null, h('div', { class: 'delta' }, h('span', { class: 'muted', text: d.updated ? `Zendrop updated ${d.updated}` : '' })), null),
-      tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'tubes', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : 'needs Shopify' })), null),
+      tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'tubes', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : man ? `report, ${man.days} days${t.rate ? ` · ~${fmtInt(t.onHand / t.rate)} days of total stock` : ''}` : 'needs sales' })), null),
       tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant + (x.oversold ? ` (−${fmtInt(x.oversold)})` : '')).join(', ') || 'none' })), null),
       tile('Reorder now', fmtInt(now.length + out.length), now.length + out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
       tile('Suggested order', t.suggest ? fmtInt(t.suggest) : '0', 'tubes', h('div', { class: 'delta' }, h('span', { class: t.belowMoq ? 'down' : 'muted', text: t.moq ? `MOQ ${fmtInt(t.moq)}${t.belowMoq ? ': top up to the MOQ' : ''}` : '' })), null)))
@@ -1473,7 +1475,7 @@
         h('td', { class: 'num muted', text: fmtInt(part(x, false)) }),
         h('td', { class: 'num muted', text: fmtInt(part(x, true)) }),
         h('td', { class: 'num' }, h('b', { text: fmtInt(x.onHand) }), x.oversold ? ' ' : null, x.oversold ? h('span', { class: 'tag bad', title: 'Zendrop shows a negative count: orders taken with no stock behind them', text: `oversold ${fmtInt(x.oversold)}` }) : null),
-        h('td', { class: 'num', title: x.sold != null ? `${fmtInt(x.sold)} tubes in ${d.settings.baselineDays} days` : 'Needs Serentia Shopify' , text: x.rate == null ? '–' : fmt1(x.rate) }),
+        h('td', { class: 'num', title: x.sold != null ? `${fmtInt(x.sold)} tubes in ${x.rateSource === 'manual' ? man?.days : d.settings.baselineDays} days (${x.rateSource === 'manual' ? 'pasted report' : 'Shopify'})` : 'Needs per-shade sales', text: x.rate == null ? '–' : fmt1(x.rate) }),
         h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : fmtInt(x.cover) }),
         h('td', { class: 'num', text: x.status === 'out' ? 'now' : dayTxt(x.runsOut) }),
         h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : dayTxt(x.reorderBy) }),
@@ -1482,6 +1484,7 @@
     wrap.append(h('section', { class: 'section' },
       h('div', { class: 'sec-head' }, h('h2', { text: 'Elixir+ Cream by shade' }), h('span', { class: 'why', text: `Reorder point = ${lead}-day lead time + ${d.settings.safetyDays} days safety. A suggested order covers ${d.settings.targetDays} days after it lands.` })),
       h('div', { class: 'card', style: 'overflow:auto' }, S.length ? tbl : h('p', { class: 'muted', text: 'No shades found in the Zendrop Inventory tab.' }))))
+    if (!src.shopify.configured) wrap.append(salesBox(man))
     const notes = []
     const over = S.filter((x) => x.oversold)
     if (over.length) notes.push(`${over.map((x) => `${x.variant} (${fmtInt(x.oversold)})`).join(', ')}: Zendrop shows a negative count, so orders were taken with no stock behind them. Those customers are waiting; ask Zendrop when the next batch lands, and keep the pre-order widget's dates honest.`)
@@ -1496,9 +1499,48 @@
       h('div', { class: 'card' }, h('h3', { text: 'Sources' }), h('ul', { class: 'notes' },
         h('li', null, 'Stock: Zendrop sheet, Inventory tab ', h('a', { href: `https://docs.google.com/spreadsheets/d/${src.zendrop.sheetId}/edit`, target: '_blank', rel: 'noopener', text: 'open' }), src.zendrop.cachedAt ? ` · read ${agoTxt(src.zendrop.cachedAt)}` : ''),
         h('li', null, 'Live count: ', h('a', { href: 'https://app.zendrop.com/inventory', target: '_blank', rel: 'noopener', text: 'app.zendrop.com/inventory' })),
-        h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : 'Sales: not connected yet' }))),
+        h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : man ? `Sales: Shopify report pasted ${agoTxt(man.savedAt)} (${man.days} days)` : 'Sales: not connected yet' }))),
       (d.others || []).length ? h('div', { class: 'card' }, h('h3', { text: 'Other products at Zendrop' }), tableView(['Product', 'SKU', 'Count'], d.others.map((o) => [`${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''}`, o.sku, fmtInt(o.count)]))) : null))
     return wrap
+  }
+
+  // Shopify report upload, used until the Serentia Shopify keys are in Vercel.
+  function salesBox(man) {
+    state.serPaste = state.serPaste || { text: '', days: '', period: '' }
+    const P = state.serPaste
+    const msg = h('span', { class: 'msg' })
+    const ta = h('textarea', { rows: 5, placeholder: 'Paste the report rows here (or lines like "Ivory 120"), or choose the CSV file above.', oninput: (e) => { P.text = e.target.value } }, P.text)
+    const daysIn = h('input', { type: 'number', min: 1, max: 366, value: P.days || '', placeholder: '30', style: 'width:70px', oninput: (e) => { P.days = e.target.value } })
+    const file = h('input', { type: 'file', accept: '.csv,text/csv', onchange: async (e) => {
+      const f = e.target.files?.[0]; if (!f) return
+      P.text = await f.text(); ta.value = P.text
+      // Shopify names exports "..._-_2026-09-26_-_2026-10-26.csv": take the window from it.
+      const m = f.name.match(/(\d{4}-\d{2}-\d{2})\D+(\d{4}-\d{2}-\d{2})/)
+      if (m) { const n = Math.round((Date.parse(m[2]) - Date.parse(m[1])) / 864e5) + 1; P.days = String(n); daysIn.value = P.days; P.period = `${dayTxt(m[1])} to ${dayTxt(m[2])}` }
+      msg.textContent = `Loaded ${f.name}${m ? ` (${P.days} days)` : ''}. Check the days, then Save.`
+    } })
+    const save = h('button', { class: 'btn sm', text: 'Save sales', onclick: async () => {
+      if (DEMO) { msg.textContent = 'Demo: nothing saved.'; return }
+      save.disabled = true; msg.textContent = 'Saving…'
+      try {
+        await api('/api/serentia/sales', { method: 'POST', body: { text: P.text, days: Number(P.days || 30), period: P.period } })
+        state.serPaste = null; await loadSerentia()
+      } catch (e) { msg.textContent = e.message; save.disabled = false }
+    } })
+    const clear = man ? h('button', { class: 'btn sm ghost', text: 'Clear saved sales', onclick: async () => { if (DEMO) return; try { await api('/api/serentia/sales', { method: 'DELETE' }); await loadSerentia() } catch (e) { msg.textContent = e.message } } }) : null
+    const card = h('div', { class: 'card salesbox', style: 'margin-top:16px' },
+      h('h3', { text: 'Sales from a Shopify report' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 8px;font-size:12.5px' }, 'Until the Serentia Shopify keys are in Vercel. In Shopify: Analytics → Reports → "Total sales by product", set the dates (e.g. last 30 days), split it by ', h('b', { text: 'product variant' }), ' so each shade has its own row, then Export → CSV. All Elixir+ listings count towards the same shades; brush and Hydra-Prep are left out. "Buy 2 Get 1" counts as 3 tubes.'))
+    if (man) {
+      const byShade = {}
+      for (const m of man.matched || []) if (m.shade) byShade[m.shade] = (byShade[m.shade] || 0) + m.tubes
+      card.append(h('p', { style: 'margin:0 0 8px;font-size:13px' }, h('b', { text: 'Saved: ' }), `${fmtInt(man.creamTotal)} tubes over ${man.days} days${man.period ? ` (${man.period})` : ''}. `,
+        man.shadeLevel ? Object.entries(byShade).map(([k, v]) => `${k} ${fmtInt(v)}`).join(' · ') : h('span', { class: 'tag warn', text: 'totals only, no shade rows' }),
+        (man.skipped || []).length ? h('span', { class: 'muted', text: ` · left out: ${man.skipped.slice(0, 4).join(', ')}${man.skipped.length > 4 ? '…' : ''}` }) : null))
+    }
+    card.append(h('div', { class: 'row', style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px' }, file, h('label', null, 'Days in the report ', daysIn)), ta,
+      h('div', { class: 'actions', style: 'display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap' }, save, clear, msg))
+    return card
   }
 
   function demoSerentia() {
@@ -1510,13 +1552,14 @@
       const net = r.parts.reduce((a, p) => a + p.count, 0), onHand = Math.max(0, net), oversold = net < 0 ? -net : 0
       const cover = onHand / r.rate
       const status = onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
-      return { ...r, onHand, oversold, sold: r.rate * 14, rateSource: 'shopify', cover: onHand ? cover : null, status,
+      return { ...r, onHand, oversold, sold: r.rate * 14, rateSource: 'manual', cover: onHand ? cover : null, status,
         runsOut: new Date(now + cover * 86400e3).toISOString(), reorderBy: new Date(now + Math.max(0, cover - point) * 86400e3).toISOString(),
         suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - onHand + oversold) / 100) * 100 : 0 }
     }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
     const suggest = shades.reduce((a, x) => a + x.suggest, 0)
     return { settings: { baselineDays: 14, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
-      sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: true, store: 'demo', orders: 1840 } },
+      sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: false },
+        manual: { days: 14, period: 'demo', savedAt: new Date().toISOString(), by: 'Demo', creamTotal: rows.reduce((a, r) => a + r.rate * 14, 0), shadeLevel: true, matched: rows.map((r) => ({ shade: r.variant, tubes: r.rate * 14 })), skipped: ['Serentia™ Essence Blending Brush', 'Hydra-Prep Cream'] } },
       others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0 }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64 }],
       shades, totals: { onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
   }

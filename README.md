@@ -150,6 +150,11 @@ the Serentia Shopify store (variables below).
 | `SERENTIA_ZENDROP_SHEET_ID` | no | Defaults to the Serene Zendrop sheet. |
 | `SERENTIA_ZENDROP_INVENTORY_GID` | no | The Inventory tab's `gid=` from its URL; without it the tab is read by name. |
 
+Until those are set, sales can be uploaded from a Shopify Analytics CSV ("Total sales
+by product", split by product variant for per-shade dates) in the box under the
+table; it is stored in `inn_cache` (`ser_manual_sales`) via `POST /api/serentia/sales`.
+Live Shopify sales replace it automatically once the keys exist.
+
 Code: `lib/serentia/stock.js`, `app/api/serentia/stock`. Reorder point = lead
 time + 7 days safety; a suggested order covers 30 days after it lands.
 
