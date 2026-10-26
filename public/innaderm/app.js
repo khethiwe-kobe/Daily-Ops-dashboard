@@ -1461,17 +1461,19 @@
     wrap.append(h('div', { class: 'kpis', style: 'margin-top:16px' },
       tile('Tubes at Zendrop', fmtInt(t.onHand), null, h('div', { class: 'delta' }, h('span', { class: 'muted', text: d.updated ? `Zendrop updated ${d.updated}` : '' })), null),
       tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'tubes', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : 'needs Shopify' })), null),
-      tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant).join(', ') || 'none' })), null),
-      tile('Reorder now', fmtInt(now.length + out.length), 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
+      tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant + (x.oversold ? ` (−${fmtInt(x.oversold)})` : '')).join(', ') || 'none' })), null),
+      tile('Reorder now', fmtInt(now.length + out.length), now.length + out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
       tile('Suggested order', t.suggest ? fmtInt(t.suggest) : '0', 'tubes', h('div', { class: 'delta' }, h('span', { class: t.belowMoq ? 'down' : 'muted', text: t.moq ? `MOQ ${fmtInt(t.moq)}${t.belowMoq ? ': top up to the MOQ' : ''}` : '' })), null)))
     const lead = S[0]?.leadDays ?? 10
+    const part = (x, kanary) => x.parts.filter((p) => /kanary/i.test(p.product) === kanary).reduce((a, p) => (p.count == null ? a : (a ?? 0) + p.count), null)
     const tbl = h('table', { class: 'tbl stbl' },
-      h('thead', null, h('tr', null, ['Shade', 'Zendrop app', 'Sumai', 'Sold / day', 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 7 ? 'num' : '', text: x })))),
+      h('thead', null, h('tr', null, ['Shade', 'Original SKU', 'Kanary SKU', 'On hand', 'Sold / day', 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 8 ? 'num' : '', text: x })))),
       h('tbody', null, S.map((x) => h('tr', null,
         h('td', null, h('b', { text: x.variant })),
-        h('td', { class: 'num', text: fmtInt(x.onHand) }),
-        h('td', { class: 'num' }, fmtInt(x.sumai), x.mismatch ? ' ' : null, x.mismatch ? h('span', { class: 'tag warn', title: 'Zendrop app and the Sumai system disagree: ask Zendrop which is right', text: 'check' }) : null),
-        h('td', { class: 'num', title: x.rateSource === 'zendrop' ? "From Zendrop's days-left estimate" : x.rateSource === 'shopify' ? `${fmtInt(x.sold)} tubes in ${d.settings.baselineDays} days` : '' }, x.rate == null ? '–' : fmt1(x.rate), x.rateSource === 'zendrop' ? h('small', { class: 'muted', text: ' ZD' }) : null),
+        h('td', { class: 'num muted', text: fmtInt(part(x, false)) }),
+        h('td', { class: 'num muted', text: fmtInt(part(x, true)) }),
+        h('td', { class: 'num' }, h('b', { text: fmtInt(x.onHand) }), x.oversold ? ' ' : null, x.oversold ? h('span', { class: 'tag bad', title: 'Zendrop shows a negative count: orders taken with no stock behind them', text: `oversold ${fmtInt(x.oversold)}` }) : null),
+        h('td', { class: 'num', title: x.sold != null ? `${fmtInt(x.sold)} tubes in ${d.settings.baselineDays} days` : 'Needs Serentia Shopify' , text: x.rate == null ? '–' : fmt1(x.rate) }),
         h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : fmtInt(x.cover) }),
         h('td', { class: 'num', text: x.status === 'out' ? 'now' : dayTxt(x.runsOut) }),
         h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : dayTxt(x.reorderBy) }),
@@ -1481,35 +1483,42 @@
       h('div', { class: 'sec-head' }, h('h2', { text: 'Elixir+ Cream by shade' }), h('span', { class: 'why', text: `Reorder point = ${lead}-day lead time + ${d.settings.safetyDays} days safety. A suggested order covers ${d.settings.targetDays} days after it lands.` })),
       h('div', { class: 'card', style: 'overflow:auto' }, S.length ? tbl : h('p', { class: 'muted', text: 'No shades found in the Zendrop Inventory tab.' }))))
     const notes = []
-    if (out.length) notes.push(`${out.map((x) => x.variant).join(', ')} ${out.length === 1 ? 'is' : 'are'} at zero at Zendrop. Make sure the pre-order widget is live for ${out.length === 1 ? 'it' : 'them'} (Sell when out of stock on, real batch dates in the custom.preorder_batches field), or customers buy a shade that cannot ship.`)
-    if (S.some((x) => x.mismatch)) notes.push('Zendrop\'s app and their Sumai system disagree on at least one shade (marked "check"). Ask Zendrop which count is right before ordering.')
-    if (S.some((x) => x.rateSource === 'zendrop')) notes.push('Rates marked ZD come from Zendrop\'s own days-left estimate, not real sales.')
+    const over = S.filter((x) => x.oversold)
+    if (over.length) notes.push(`${over.map((x) => `${x.variant} (${fmtInt(x.oversold)})`).join(', ')}: Zendrop shows a negative count, so orders were taken with no stock behind them. Those customers are waiting; ask Zendrop when the next batch lands, and keep the pre-order widget's dates honest.`)
+    const zero = out.filter((x) => !x.oversold)
+    if (zero.length) notes.push(`${zero.map((x) => x.variant).join(', ')} ${zero.length === 1 ? 'is' : 'are'} at zero. Make sure the pre-order widget is live for ${zero.length === 1 ? 'it' : 'them'} (Sell when out of stock on, real batch dates), or customers buy a shade that cannot ship.`)
+    notes.push('Each shade is the original Elixir+ listing (3064479) plus the "Kanary new product" listing (3373424) added together. Stock moved to the Kanary rows in October.')
+    if (S.some((x) => x.status === 'unknown')) notes.push('Days of cover and reorder dates need sales per shade: add the Serentia Shopify keys in Vercel.')
     if (src.shopify.truncated) notes.push('More than 3,000 orders in the window: sales are undercounted.')
-    notes.push('Bundles: a variant title like "Buy 2 Get 1" counts as 3 tubes. Check the Shopify variant names match the shade names exactly.')
+    notes.push('Bundles: a variant title like "Buy 2 Get 1" counts as 3 tubes. Shopify variant names must contain the shade name.')
     wrap.append(h('div', { class: 'grid2s' },
       h('div', { class: 'card' }, h('h3', { text: 'Read this first' }), h('ul', { class: 'notes' }, notes.map((n) => h('li', { text: n })))),
       h('div', { class: 'card' }, h('h3', { text: 'Sources' }), h('ul', { class: 'notes' },
         h('li', null, 'Stock: Zendrop sheet, Inventory tab ', h('a', { href: `https://docs.google.com/spreadsheets/d/${src.zendrop.sheetId}/edit`, target: '_blank', rel: 'noopener', text: 'open' }), src.zendrop.cachedAt ? ` · read ${agoTxt(src.zendrop.cachedAt)}` : ''),
         h('li', null, 'Live count: ', h('a', { href: 'https://app.zendrop.com/inventory', target: '_blank', rel: 'noopener', text: 'app.zendrop.com/inventory' })),
-        h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : 'Sales: not connected yet' })))))
+        h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : 'Sales: not connected yet' }))),
+      (d.others || []).length ? h('div', { class: 'card' }, h('h3', { text: 'Other products at Zendrop' }), tableView(['Product', 'SKU', 'Count'], d.others.map((o) => [`${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''}`, o.sku, fmtInt(o.count)]))) : null))
     return wrap
   }
 
   function demoSerentia() {
-    const mk = (variant, onHand, sumai, rate) => ({ variant, onHand, sumai, rate, leadDays: 10, moq: 2500 })
-    const rows = [mk('Ivory', 2798, 2798, 41), mk('Buff Beige', 2490, 2490, 63), mk('Warm Honey', 2667, 2667, 38), mk('Honey Almond', 316, 316, 19), mk('Caramel Glow', 1014, 0, 22), mk('Deep Mocha', 0, 0, 9)]
+    // Counts from the Zendrop sheet on 23 Oct 2026; the sales rates are made up for the demo.
+    const mk = (variant, orig, kan, rate) => ({ variant, parts: [{ product: 'Serentia Elixir+ Cream', count: orig }, { product: 'Kanary new product', count: kan }].filter((p) => p.count != null), rate, leadDays: 10, moq: 2500 })
+    const rows = [mk('Ivory', 0, 5018, 41), mk('Buff Beige', 0, 3861, 63), mk('Warm Honey', 0, 4023, 38), mk('Honey Almond', 0, -28, 19), mk('Caramel Glow', 140, 1911, 22), mk('Deep Mocha', 857, 1952, 9), mk('Hazelnut', null, 1943, 6)]
     const now = Date.now(), point = 17
     const shades = rows.map((r) => {
-      const cover = r.onHand / r.rate
-      const status = r.onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
-      return { ...r, sold: r.rate * 14, rateSource: 'shopify', cover: r.onHand ? cover : null, status, mismatch: r.sumai !== r.onHand,
+      const net = r.parts.reduce((a, p) => a + p.count, 0), onHand = Math.max(0, net), oversold = net < 0 ? -net : 0
+      const cover = onHand / r.rate
+      const status = onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
+      return { ...r, onHand, oversold, sold: r.rate * 14, rateSource: 'shopify', cover: onHand ? cover : null, status,
         runsOut: new Date(now + cover * 86400e3).toISOString(), reorderBy: new Date(now + Math.max(0, cover - point) * 86400e3).toISOString(),
-        suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - r.onHand) / 100) * 100 : 0 }
-    }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]))
+        suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - onHand + oversold) / 100) * 100 : 0 }
+    }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
     const suggest = shades.reduce((a, x) => a + x.suggest, 0)
     return { settings: { baselineDays: 14, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
       sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: true, store: 'demo', orders: 1840 } },
-      shades, totals: { onHand: rows.reduce((a, r) => a + r.onHand, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
+      others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0 }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64 }],
+      shades, totals: { onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
   }
 
   // ---------- Refund matrix (public/innaderm/refund.js) ----------

@@ -136,10 +136,12 @@ or the legacy token.
 
 `/innaderm?tab=serentia`, same login keys. Elixir+ Cream stock per shade from
 the **Inventory** tab of Zendrop's shared Serentia sheet ("Serene [3730212] |
-Zendrop", link-shared, read as CSV and cached 15 minutes): units in the Zendrop
-app, units in Zendrop's Sumai system (a mismatch is flagged), MOQ and lead time.
-Sales per shade come from the Serentia Shopify store when these are set; until
-then the rate falls back to Zendrop's own days-left estimate, which is often 0.
+Zendrop", link-shared, read as CSV and cached 15 minutes): the visible
+"Inventory Count" column, MOQ and lead time. Each shade adds the original
+Elixir+ listing (3064479) and the "Kanary new product" listing (3373424_3064479-*)
+together; a negative count shows as oversold. Other products (brush, Hydra-Prep)
+are listed separately. Days of cover and reorder dates need sales per shade from
+the Serentia Shopify store (variables below).
 
 | Name | Required | Notes |
 |---|---|---|
