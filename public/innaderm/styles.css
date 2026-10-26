@@ -391,3 +391,10 @@ footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display:
 .ser .grid2s h3 { margin: 0 0 6px; font-size: 14px; }
 .ser .notes { margin: 0; padding-left: 18px; font-size: 13px; display: grid; gap: 6px; }
 @media (max-width: 700px) { .top .seg.tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; } .top .seg.tabs button { flex: none; } }
+/* Board: sort bar and per-ticket date/time */
+.sortbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin: 6px 0 2px; }
+.sortbar select { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 5px 8px; font-size: 12.5px; }
+.tsum .subj { display: flex; flex-direction: column; gap: 1px; }
+.tsum .subj .when { font-size: 11.5px; color: var(--muted); }
+.tsum .subj { min-width: 0; }
+.tsum .subj .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

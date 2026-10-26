@@ -8,8 +8,9 @@
  *     agent signed each reply, the start of the customer's first message (to
  *     sort the ticket into a type) and their latest message (so the support
  *     board can show it). No attachments.
- *   - turns replies queued on the support board into Gmail drafts in the right
- *     thread, so an agent only has to check and press Send.
+ *   - every minute, handles replies queued on the support board: "Put in Gmail
+ *     as draft" becomes a draft in the right thread for the agent to check and
+ *     send; "Send reply" goes to the customer straight away.
  *
  * Setup (once, signed in to the support Gmail account):
  *   1. Go to https://script.google.com -> New project. Name it "Innaderm CS sync".
@@ -40,10 +41,18 @@ const BACKFILL_DAYS = 90
 const BATCH = 40                 // threads per POST
 const TIME_BUDGET_MS = 4.5 * 60e3
 
+// Sync every 5 minutes; queued replies and drafts every minute.
+function installTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'sync' || t.getHandlerFunction() === 'makeDrafts') ScriptApp.deleteTrigger(t)
+  })
+  ScriptApp.newTrigger('sync').timeBased().everyMinutes(5).create()
+  ScriptApp.newTrigger('makeDrafts').timeBased().everyMinutes(1).create()
+}
+
 function setup() {
   if (INGEST_KEY.indexOf('PASTE_') === 0) throw new Error('Fill in INGEST_KEY at the top of the script first.')
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'sync') ScriptApp.deleteTrigger(t) })
-  ScriptApp.newTrigger('sync').timeBased().everyMinutes(5).create()
+  installTriggers()
   const props = PropertiesService.getScriptProperties()
   props.deleteAllProperties()
   props.setProperty('backfillStart', '0')
@@ -54,8 +63,7 @@ function setup() {
 // Re-installs the trigger without restarting the backfill.
 function upgrade() {
   if (INGEST_KEY.indexOf('PASTE_') === 0) throw new Error('Fill in INGEST_KEY at the top of the script first.')
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'sync') ScriptApp.deleteTrigger(t) })
-  ScriptApp.newTrigger('sync').timeBased().everyMinutes(5).create()
+  installTriggers()
   const props = PropertiesService.getScriptProperties()
   // Re-send the last 3 days so open tickets pick up names and latest messages.
   props.setProperty('lastRun', String(Math.floor((Date.now() - 3 * 86400e3) / 1000)))
@@ -139,31 +147,46 @@ function post(threads, mailbox, backfillDone, backfill) {
   }
 }
 
-// Replies queued on the support board become drafts in their Gmail thread,
-// addressed to the customer's latest message.
+// Replies queued on the support board, addressed to the customer's latest
+// message: "draft" ones become Gmail drafts for the agent to check and send,
+// "send" ones (Send reply on the board) go to the customer straight away.
+// Runs every minute (and at the start of each sync). The dashboard claims each
+// item as it hands it out, so a reply is never sent twice.
+const SCRIPT_VERSION = 2
 function makeDrafts() {
-  const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts', { headers: { Authorization: 'Bearer ' + INGEST_KEY }, muteHttpExceptions: true })
-  if (res.getResponseCode() !== 200) return
-  const queue = JSON.parse(res.getContentText()).drafts || []
-  if (!queue.length) return
-  const me = Session.getEffectiveUser().getEmail().toLowerCase()
-  const team = [me].concat(GmailApp.getAliases().map(function (a) { return a.toLowerCase() }))
-  const results = queue.map(function (d) {
-    try {
-      const thread = GmailApp.getThreadById(d.threadId)
-      if (!thread) return { id: d.id, ok: false, error: 'thread not found' }
-      const msgs = thread.getMessages().filter(function (m) { return !m.isDraft() && team.indexOf(addr(m.getFrom())) === -1 })
-      if (!msgs.length) return { id: d.id, ok: false, error: 'no customer message in thread' }
-      const draft = msgs[msgs.length - 1].createDraftReply(d.body)
-      return { id: d.id, ok: true, draftId: draft.getId() }
-    } catch (e) {
-      return { id: d.id, ok: false, error: String(e && e.message || e) }
-    }
-  })
-  UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts', {
-    method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + INGEST_KEY },
-    payload: JSON.stringify({ results: results }), muteHttpExceptions: true,
-  })
+  const lock = LockService.getScriptLock()
+  if (!lock.tryLock(1000)) return
+  try {
+    const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts?v=' + SCRIPT_VERSION, { headers: { Authorization: 'Bearer ' + INGEST_KEY }, muteHttpExceptions: true })
+    if (res.getResponseCode() !== 200) return
+    const queue = JSON.parse(res.getContentText()).drafts || []
+    if (!queue.length) return
+    const me = Session.getEffectiveUser().getEmail().toLowerCase()
+    const team = [me].concat(GmailApp.getAliases().map(function (a) { return a.toLowerCase() }))
+    const results = queue.map(function (d) {
+      try {
+        const thread = GmailApp.getThreadById(d.threadId)
+        if (!thread) return { id: d.id, ok: false, error: 'thread not found' }
+        const msgs = thread.getMessages().filter(function (m) { return !m.isDraft() && team.indexOf(addr(m.getFrom())) === -1 })
+        if (!msgs.length) return { id: d.id, ok: false, error: 'no customer message in thread' }
+        const last = msgs[msgs.length - 1]
+        if (d.action === 'send') {
+          last.reply(d.body)
+          return { id: d.id, ok: true }
+        }
+        const draft = last.createDraftReply(d.body)
+        return { id: d.id, ok: true, draftId: draft.getId() }
+      } catch (e) {
+        return { id: d.id, ok: false, error: String(e && e.message || e) }
+      }
+    })
+    UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts', {
+      method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + INGEST_KEY },
+      payload: JSON.stringify({ results: results }), muteHttpExceptions: true,
+    })
+  } finally {
+    lock.releaseLock()
+  }
 }
 
 function displayName(from) {

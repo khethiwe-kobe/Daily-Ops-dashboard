@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic'
 // GET the replies waiting to become Gmail drafts, POST back what happened.
 export async function GET(request) {
   if (!scriptAuthorised(request)) return Response.json({ error: 'unauthorized' }, { status: 401 })
-  return Response.json({ drafts: await pendingDrafts() })
+  const v = Number(new URL(request.url).searchParams.get('v') || 1)
+  return Response.json({ drafts: await pendingDrafts(Number.isFinite(v) ? v : 1) })
 }
 
 export async function POST(request) {

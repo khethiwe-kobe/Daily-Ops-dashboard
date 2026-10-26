@@ -123,6 +123,8 @@
   }
 
   // Support keys (e.g. Kashif) see only the Support board and Refund matrix.
+  const ROLE_LABELS = { admin: 'Admin', viewer: 'Viewer', support: 'Customer support' }
+  const roleLabel = (r) => ROLE_LABELS[r] || r
   const ALL_TABS = [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix'], ['serentia', 'Serentia stock']]
   const tabsFor = (me) => (me?.role === 'support' ? ALL_TABS.filter(([v]) => v === 'board' || v === 'matrix') : ALL_TABS)
   function fixView() {
@@ -462,7 +464,7 @@
       ['board', 'matrix', 'serentia'].includes(state.view) ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
       sync,
       h('div', { class: 'user' },
-        h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: state.me.role })),
+        h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: roleLabel(state.me.role) })),
         state.me.role === 'admin' ? h('button', { class: 'icon-btn', title: 'Settings & access keys', 'aria-label': 'Settings', onclick: openDrawer, html: gear }) : null,
         h('button', { class: 'icon-btn', title: 'Light / dark', 'aria-label': 'Toggle theme', onclick: toggleTheme, html: sun }),
         h('button', { class: 'icon-btn', title: 'Sign out', 'aria-label': 'Sign out', onclick: signOut, html: exit }))))
@@ -818,7 +820,7 @@
       } catch (e) { msg.textContent = e.message }
     }
     const keyName = h('input', { type: 'text', placeholder: 'Who is this key for? e.g. Calvin' })
-    const keyRole = h('select', null, h('option', { value: 'viewer', text: 'Viewer (all tabs, no settings)' }), h('option', { value: 'support', text: 'Support (Support board + Refund matrix only)' }), h('option', { value: 'admin', text: 'Admin (can edit inputs and keys)' }))
+    const keyRole = h('select', null, h('option', { value: 'viewer', text: 'Viewer (all tabs, no settings)' }), h('option', { value: 'support', text: 'Customer support (Support board + Refund matrix only)' }), h('option', { value: 'admin', text: 'Admin (can edit inputs and keys)' }))
     const issue = async () => {
       try {
         const r = DEMO ? { key: 'inn_demo0000-demo0000-demo0000-demo0000', name: keyName.value } : await api('/keys', { method: 'POST', body: { name: keyName.value, role: keyRole.value } })
@@ -876,7 +878,7 @@
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Issue key', onclick: issue })),
       state.newKey ? h('div', { class: 'newkey' }, `New key for ${state.newKey.name}. Copy it now; it is not shown again.`, h('code', { text: state.newKey.key }), h('button', { class: 'btn sm ghost', text: 'Copy', onclick: () => navigator.clipboard?.writeText(state.newKey.key) })) : null,
       h('div', { style: 'margin-top:12px' }, (state.keys || []).map((k) => h('div', { class: 'keyrow' },
-        h('div', null, h('b', { text: k.name }), k.you ? ' (you)' : '', h('div', { class: 'm', text: `${k.role} · created ${fmtDate(k.createdAt)}${k.lastUsedAt ? ' · last used ' + fmtDate(k.lastUsedAt) : ' · never used'}${k.revokedAt ? ' · REVOKED ' + fmtDate(k.revokedAt) : ''}` })),
+        h('div', null, h('b', { text: k.name }), k.you ? ' (you)' : '', h('div', { class: 'm', text: `${roleLabel(k.role)} · created ${fmtDate(k.createdAt)}${k.lastUsedAt ? ' · last used ' + fmtDate(k.lastUsedAt) : ' · never used'}${k.revokedAt ? ' · REVOKED ' + fmtDate(k.revokedAt) : ''}` })),
         !k.revokedAt && !k.you ? h('button', { class: 'btn sm danger', text: 'Revoke', onclick: () => revoke(k) }) : h('span')))),
       h('h3', { text: 'Sources' }),
       h('p', { class: 'muted', style: 'font-size:12.5px', text: `Shopify store: ${state.data?.integrations.shopify.store}. Zendrop sheet id: ${S.zendrop_sheet_id}. ClickUp lists: ${(S.clickup_lists || []).map((l) => l.name).join(', ')}. Change these in Vercel env / the settings API.` }))
@@ -1167,6 +1169,7 @@
       h('label', { class: 'signer' }, 'Signing as ', h('input', { value: signer(), placeholder: 'your name', 'aria-label': 'Your sign-off name', onchange: (e) => { safeSet(LS_SIGNER, e.target.value.trim() || null); render() } }))))
     if (!b.sync?.lastIngestAt && !DEMO) wrap.append(h('div', { class: 'banner bad', text: 'No Gmail data yet. Check the Apps Script in the support inbox is running.' }))
     if (b.sync?.lastIngestAt && !b.draftScript && !DEMO) wrap.append(h('div', { class: 'banner', text: 'The Gmail script has not picked up drafts yet. Paste the updated script into script.google.com and run "upgrade" once, then "Put in Gmail" works.' }))
+    else if (b.draftScript && !(b.draftScript.version >= 2) && !DEMO && state.me?.role === 'admin') wrap.append(h('div', { class: 'banner', text: '"Send reply" needs the latest Gmail script. Paste the updated script into script.google.com and run "upgrade" once. Until then, replies queued with Send reply wait and drafts keep working.' }))
     if (sub === 'auto') wrap.append(automationView(b))
     else if (sub === 'templates') wrap.append(templatesView(b))
     else wrap.append(ticketsView(b))
@@ -1185,15 +1188,28 @@
     const needle = (state.boardSearch || '').trim().toLowerCase()
     let list = b.tickets.filter(f)
     if (needle) list = b.tickets.filter((t) => [t.customerName, t.customerEmail, t.subject, t.lastExcerpt, ...(t.orderNumbers || []), ...(t.orders || []).map((o) => o.name)].join(' ').toLowerCase().includes(needle))
-    // Risky first, then the longest-waiting.
     const risk = (t) => (t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') ? 1 : 0)
-    list.sort((a, c) => (risk(c) - risk(a)) || (new Date(a.lastIn) - new Date(c.lastIn)))
+    // Sort by the customer's latest message (default: longest waiting first) or
+    // by when they first wrote. Risky tickets lead only in the default order.
+    const sortKey = state.boardSort || 'waiting'
+    const ts = (t, k) => new Date(k === 'first' || k === 'first_new' ? t.firstIn : t.lastIn).getTime()
+    const SORTS = { waiting: (a, c) => (risk(c) - risk(a)) || (ts(a) - ts(c)), newest: (a, c) => ts(c) - ts(a), oldest: (a, c) => ts(a) - ts(c), first: (a, c) => ts(a, 'first') - ts(c, 'first'), first_new: (a, c) => ts(c, 'first') - ts(a, 'first') }
+    list.sort(SORTS[sortKey] || SORTS.waiting)
+    const grouped = state.boardGroup !== false
+    frag.append(h('div', { class: 'sortbar' },
+      h('label', null, 'Sort ', h('select', { onchange: (e) => { state.boardSort = e.target.value; render() } },
+        [['waiting', 'Waiting longest (risky first)'], ['newest', 'Latest message: newest first'], ['oldest', 'Latest message: oldest first'], ['first_new', 'First contact: newest first'], ['first', 'First contact: oldest first']]
+          .map(([v, l]) => h('option', { value: v, selected: v === sortKey, text: l })))),
+      h('label', null, h('input', { type: 'checkbox', checked: grouped, onchange: (e) => { state.boardGroup = e.target.checked; render() } }), ' Group by type')))
     if (!list.length) { frag.append(h('div', { class: 'card empty', text: needle ? 'Nothing matches that search.' : qKey === 'reply' ? 'Inbox zero. Nobody is waiting on us.' : 'Nothing here.' })); return frag }
+    if (!grouped) { frag.append(h('div', { class: 'tlist', style: 'margin-top:12px' }, list.map((t) => ticketRow(t, b)))); return frag }
     const groups = new Map()
     for (const t of list) { if (!groups.has(t.category)) groups.set(t.category, []); groups.get(t.category).push(t) }
     const stageOf = Object.fromEntries((b.automation || []).map((a) => [a.category, a]))
     // Groups holding a dispute, legal or reaction ticket first, then the biggest.
-    const ordered = [...groups.entries()].sort((a, c) => (Math.max(...c[1].map(risk)) - Math.max(...a[1].map(risk))) || (c[1].length - a[1].length))
+    const ordered = sortKey === 'waiting'
+      ? [...groups.entries()].sort((a, c) => (Math.max(...c[1].map(risk)) - Math.max(...a[1].map(risk))) || (c[1].length - a[1].length))
+      : [...groups.entries()] // already in the chosen order of each group's first ticket
     for (const [cat, items] of ordered) {
       const st = stageOf[cat]
       const stage = b.stages.find((s) => s.key === st?.stage)
@@ -1211,6 +1227,8 @@
     const cls = hrs > 24 || (urgent && hrs > 4) ? 'bad' : hrs > 6 || (urgent && hrs > 2) ? 'warn' : 'ok'
     return h('span', { class: 'sla ' + cls, title: 'Time since the customer last wrote', text: hrsTxt(hrs) })
   }
+  // "Mon 26 Oct, 14:32" in the viewer's own time zone.
+  const fmtStamp = (d) => (d ? new Date(d).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–')
   const agoTxt = (d) => { const hrs = (Date.now() - new Date(d)) / 3600e3; return hrs < 1 ? Math.max(1, Math.round(hrs * 60)) + 'm ago' : hrs < 48 ? Math.round(hrs) + 'h ago' : Math.round(hrs / 24) + 'd ago' }
 
   function ticketRow(t, b) {
@@ -1220,12 +1238,12 @@
     row.append(h('button', { class: 'tsum', 'aria-expanded': String(open), onclick: () => { state.openTicket = open ? null : t.id; render() } },
       slaChip(t),
       h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown', title: t.customerEmail || '' }), t.vip ? tag('VIP', 'warn') : null),
-      h('span', { class: 'subj', text: t.subject }),
+      h('span', { class: 'subj' }, h('span', { class: 's', text: t.subject }), h('span', { class: 'when', title: `First contact ${fmtStamp(t.firstIn)}`, text: fmtStamp(t.lastIn) })),
       h('span', { class: 'tags' },
         t.reopened ? tag('Replied again', 'bad') : null,
         t.flags.map((x) => tag(FLAG_LABEL[x] || x, 'bad')),
         t.orders?.[0] ? tag(t.orders[0].name) : null,
-        lastDraft && lastDraft.status === 'pending' ? tag('Draft → Gmail…', 'warn') : lastDraft && lastDraft.status === 'created' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag(lastDraft.source === 'auto' ? 'Auto-draft in Gmail' : 'Draft in Gmail', 'good') : null,
+        lastDraft && lastDraft.action === 'send' && ['pending', 'claimed'].includes(lastDraft.status) ? tag('Sending…', 'warn') : lastDraft && lastDraft.action === 'send' && lastDraft.status === 'sent' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag('Reply sent', 'good') : lastDraft && ['pending', 'claimed'].includes(lastDraft.status) ? tag('Draft → Gmail…', 'warn') : lastDraft && lastDraft.status === 'created' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag(lastDraft.source === 'auto' ? 'Auto-draft in Gmail' : 'Draft in Gmail', 'good') : null,
         t.clickup ? tag(t.clickup.calvinReplied ? 'Calvin answered' : 'With Calvin', t.clickup.calvinReplied ? 'good' : 'bad') : null),
       h('span', { class: 'st tag ' + (STATUS_CLS[t.status] || ''), text: t.status })))
     if (open) row.append(ticketDetail(t, b))
@@ -1239,8 +1257,8 @@
     left.append(h('div', { class: 'meta' },
       h('a', { href: t.link, target: '_blank', rel: 'noopener', class: 'btn sm ghost', text: 'Open thread in Gmail' }),
       t.customerLink ? h('a', { href: t.customerLink, target: '_blank', rel: 'noopener', class: 'btn sm ghost', text: 'All their emails' }) : null,
-      h('span', { class: 'muted', text: `${t.customerEmail || ''} · first wrote ${fmtDate(t.firstIn)} · ${t.msgsIn} from them, ${t.msgsOut} from us` })))
-    left.append(h('div', { class: 'msg' }, h('div', { class: 'lbl', text: `Their latest message · ${agoTxt(t.lastIn)}` }), h('p', { text: t.lastExcerpt || t.excerpt || '(message text arrives with the updated Gmail script)' })))
+      h('span', { class: 'muted', text: `${t.customerEmail || ''} · first wrote ${fmtStamp(t.firstIn)} · ${t.msgsIn} from them, ${t.msgsOut} from us` })))
+    left.append(h('div', { class: 'msg' }, h('div', { class: 'lbl', text: `Their latest message · ${fmtStamp(t.lastIn)} (${agoTxt(t.lastIn)})` }), h('p', { text: t.lastExcerpt || t.excerpt || '(message text arrives with the updated Gmail script)' })))
     if (t.excerpt && t.lastExcerpt && !t.lastExcerpt.startsWith(t.excerpt.slice(0, 60))) left.append(h('details', { class: 'msg first' }, h('summary', { text: 'First message' }), h('p', { text: t.excerpt })))
     left.append(h('div', { class: 'lbl', style: 'margin-top:12px', text: t.orders?.length ? `Orders${t.spent ? ` · $${Math.round(t.spent)} spent` : ''}${t.vip ? ' · VIP (2+ orders or $100+)' : ''}` : 'Orders' }))
     left.append(t.orders?.length ? h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl' },
@@ -1274,25 +1292,33 @@
     if (c.text == null) c.text = fillTpl(tpl?.body || '', vars)
     const ta = h('textarea', { class: 'reply', rows: 14, spellcheck: 'true', oninput: (e) => { c.text = e.target.value; warn() } }, c.text)
     const warnBox = h('div', { class: 'warns' })
-    const send = h('button', { class: 'btn', text: 'Put in Gmail as draft' })
+    const reply = h('button', { class: 'btn', text: 'Send reply', title: 'Sends this reply to the customer from support@innaderm.com within about a minute' })
+    const send = h('button', { class: 'btn ghost', text: 'Put in Gmail as draft' })
     const msg = h('span', { class: 'msg' })
     function warn() {
       const ph = [...new Set(c.text.match(PLACEHOLDER_RE) || [])]
       const br = [...new Set(c.text.match(/\{\w+\}/g) || [])]
       warnBox.replaceChildren(...[...ph, ...br].map((p) => tag('Replace ' + p, 'bad')))
-      send.disabled = !!(ph.length || br.length) || !c.text.trim()
+      send.disabled = reply.disabled = !!(ph.length || br.length) || !c.text.trim() || !me
     }
     warn()
-    send.onclick = async () => {
-      send.disabled = true; msg.textContent = 'Queuing…'
+    const queue = async (action) => {
+      if (action === 'send') {
+        const to = t.customerName ? `${t.customerName} <${t.customerEmail || ''}>` : t.customerEmail || 'the customer'
+        if (!confirm(`Send this reply to ${to} now?\n\nIt goes out from the support inbox within about a minute, in the same email thread.${tpl?.checklist ? '\n\nBefore sending: ' + tpl.checklist : ''}`)) return
+      }
+      send.disabled = reply.disabled = true; msg.textContent = 'Queuing…'
       try {
-        if (!DEMO) await api('/cs/board/draft', { method: 'POST', body: { id: t.id, body: c.text, template: c.template, category: t.category } })
-        t.drafts.unshift({ status: 'pending', source: 'agent', at: new Date().toISOString(), by: state.me.name })
-        t.status = 'Drafted'; t.statusSet = true
-        msg.textContent = 'Queued. It appears as a draft in the Gmail thread within 5 minutes; check it there and press Send.'
+        const r = DEMO ? { id: Date.now() } : await api('/cs/board/draft', { method: 'POST', body: { id: t.id, body: c.text, template: c.template, category: t.category, action } })
+        t.drafts.unshift({ id: r.id, action, status: 'pending', source: 'agent', at: new Date().toISOString(), by: state.me.name })
+        if (action === 'draft') { t.status = 'Drafted'; t.statusSet = true }
+        if (action === 'send' && b.draftScript && !(b.draftScript.version >= 2)) msg.textContent = 'Queued, but the Gmail script needs updating before it can send: paste the new script and run "upgrade".'
+        else msg.textContent = action === 'send' ? 'Sending. It goes out within about a minute; you can cancel below until then.' : 'Queued. It appears as a draft in the Gmail thread within a minute or two; check it there and press Send.'
         setTimeout(render, 2500)
-      } catch (e) { msg.textContent = e.message; send.disabled = false }
+      } catch (e) { msg.textContent = e.message; warn() }
     }
+    reply.onclick = () => queue('send')
+    send.onclick = () => queue('draft')
     const copy = h('button', { class: 'btn ghost', text: 'Copy', onclick: async () => { try { await navigator.clipboard.writeText(c.text); msg.textContent = 'Copied.' } catch { ta.select(); msg.textContent = 'Press Ctrl+C to copy.' } } })
     const pick = h('select', { 'aria-label': 'Template', onchange: (e) => { c.template = e.target.value; c.text = null; render() } },
       b.templates.map((x) => h('option', { value: x.key, selected: x.key === c.template, text: `${x.title}${x.approved ? '' : ' (not approved)'}` })))
@@ -1303,9 +1329,15 @@
       tpl?.checklist ? h('div', { class: 'check' }, h('b', { text: 'Before sending: ' }), tpl.checklist) : null,
       !me ? h('div', { class: 'banner', style: 'margin:6px 0', text: 'Set your sign-off name in "Signing as" above.' }) : null,
       ta, warnBox,
-      h('div', { class: 'actions' }, send, copy, msg))
+      h('div', { class: 'actions' }, reply, send, copy, msg))
     const drafts = t.drafts.slice(0, 3)
-    if (drafts.length) box.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:6px' }, drafts.map((d) => h('div', { text: `${d.source === 'auto' ? 'Auto-draft' : 'Draft by ' + (d.by || '?')} ${agoTxt(d.at)}: ${d.status === 'created' ? 'in Gmail' : d.status === 'pending' ? 'waiting for the Gmail script' : d.status}${d.error ? ' (' + d.error + ')' : ''}` }))))
+    const STATE = { created: 'in Gmail drafts', sent: 'sent to the customer', pending: 'waiting for the Gmail script', claimed: 'being processed by Gmail', failed: 'failed', cancelled: 'cancelled', replaced: 'replaced by a newer one' }
+    const cancel = async (d) => {
+      try { if (!DEMO) await api('/cs/board/draft', { method: 'POST', body: { id: t.id, cancel: d.id } }); d.status = 'cancelled'; render() } catch (e) { alert(e.message); loadBoard(true) }
+    }
+    if (drafts.length) box.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:6px' }, drafts.map((d) => h('div', null,
+      `${d.source === 'auto' ? 'Auto-draft' : (d.action === 'send' ? 'Reply by ' : 'Draft by ') + (d.by || '?')} · ${fmtStamp(d.at)}: ${STATE[d.status] || d.status}${d.error ? ' (' + d.error + ')' : ''}`,
+      d.status === 'pending' && d.id ? h('button', { class: 'tbtn', style: 'margin-left:6px', text: d.action === 'send' ? 'Cancel send' : 'Cancel', onclick: () => cancel(d) }) : null))))
     return box
   }
 
