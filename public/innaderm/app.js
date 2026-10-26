@@ -1195,7 +1195,7 @@
   }
 
   function slaChip(t) {
-    if (t.waitingHours == null) return h('span', { class: 'sla ok', text: t.lastOut ? 'replied ' + agoTxt(t.lastOut) : '' })
+    if (t.waitingHours == null) return h('span', { class: 'sla done', title: t.lastOut ? 'We replied ' + agoTxt(t.lastOut) : '', text: t.lastOut ? '✓ ' + agoTxt(t.lastOut).replace(' ago', '') : '' })
     const hrs = t.waitingHours
     const urgent = t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') || t.vip
     const cls = hrs > 24 || (urgent && hrs > 4) ? 'bad' : hrs > 6 || (urgent && hrs > 2) ? 'warn' : 'ok'
@@ -1209,7 +1209,7 @@
     const row = h('div', { class: 'trow' + (open ? ' open' : '') + (t.reopened ? ' back' : '') })
     row.append(h('button', { class: 'tsum', 'aria-expanded': String(open), onclick: () => { state.openTicket = open ? null : t.id; render() } },
       slaChip(t),
-      h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown' }), t.vip ? tag('VIP', 'warn') : null),
+      h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown', title: t.customerEmail || '' }), t.vip ? tag('VIP', 'warn') : null),
       h('span', { class: 'subj', text: t.subject }),
       h('span', { class: 'tags' },
         t.reopened ? tag('Replied again', 'bad') : null,
@@ -1455,6 +1455,7 @@
       mk('d4', 'Tyler Brooks', 'tyler@example.com', 'Refund', 'Refund / return', 'It has not done anything for my dandruff after 3 weeks, I want my money back.', 52, { status: 'With Calvin', statusSet: true, clickup: { id: 'x', url: 'https://app.clickup.com', status: 'founder responded', calvinReplied: true, comments: [{ by: 'Calvin Beck', fromCalvin: true, at: ago(2), text: 'Offer 3 packs at 50% first. If he insists, refund the 1-pack.' }] } }),
       mk('d5', 'Kevin Ng', 'kevin@example.com', 'Re: Your order', 'Where is my order', 'Thanks, but tracking has not moved in a week.', 1.5, { reopened: true, statusSet: true, status: 'Done', orders: [ord('#INN17501', { fulfilledAt: ago(170) })], drafts: [] }),
       mk('d6', 'Patrice Hall', 'patrice@example.com', 'Question before buying', 'Product question', 'Can I take this with my thyroid medication?', 20),
+      mk('d7', null, 'mickeyapplegate55@gmail.com', 'Re: Upcoming order for subscription #83611484229', 'Subscription', 'Ok thanks', null, { lastFrom: 'out', lastOut: ago(42), needsReply: false, status: 'Replied', vip: true }),
       mk('d7', 'Juhi Patel', 'juhi@example.com', '90 day refund request', 'Not working / results', 'I took it every morning for the full 90 days and my scalp is the same. I would like my money back under the guarantee.', 26, { orders: [ord('#INN16399', { total: 79.98, createdAt: ago(24 * 100), fulfilledAt: ago(24 * 92), deliveredAt: ago(24 * 82), subscription: true })], orderNumbers: ['#INN16399'], orderCount: 1 }),
       mk('d8', 'Steve Marsh', 'steve@example.com', 'Re: Order #INN18462 confirmed', 'Cancel order', 'I want to cancel this order please, I only placed it this morning.', 4, { orders: [ord('#INN18462', { total: 54.87, createdAt: ago(8), status: 'UNFULFILLED', fulfilledAt: null, trackingNumber: null })], orderNumbers: ['#INN18462'], orderCount: 1 }),
     ]
@@ -1466,7 +1467,7 @@
       { key: 'product_q', title: 'Product question', categories: ['Product question'], approved: false, checklist: 'Only answer from innaderm.com.', body: "Hi {first_name},\n\nThanks for your question!\n\n[ANSWER FROM THE PRODUCT PAGE OR CALVIN]\n\nIf you'd like to give it a try, here's 15% off your order: {discount_code}.\n\n{agent}\nInnaderm" },
       { key: 'general', title: 'General reply', categories: ['Other'], approved: false, body: 'Hi {first_name},\n\n[YOUR REPLY]\n\n{agent}\nInnaderm' },
     ]
-    const vars = (t) => ({ first_name: t.customerName.split(' ')[0], order_number: t.orders[0]?.name || '[ORDER NUMBER]', order_status: t.orders[0] ? (t.orders[0].fulfilledAt ? `Your order ${t.orders[0].name} shipped on ${fmtDate(t.orders[0].fulfilledAt)} with USPS. Your tracking number is ${t.orders[0].trackingNumber}.` : `Your order ${t.orders[0].name} hasn't shipped yet.`) : "Could you send me your order number (it starts with #INN)?", order_or_ask: 'Your order number', discount_code: 'WELCOME15' })
+    const vars = (t) => ({ first_name: (t.customerName || 'there').split(' ')[0], order_number: t.orders[0]?.name || '[ORDER NUMBER]', order_status: t.orders[0] ? (t.orders[0].fulfilledAt ? `Your order ${t.orders[0].name} shipped on ${fmtDate(t.orders[0].fulfilledAt)} with USPS. Your tracking number is ${t.orders[0].trackingNumber}.` : `Your order ${t.orders[0].name} hasn't shipped yet.`) : "Could you send me your order number (it starts with #INN)?", order_or_ask: 'Your order number', discount_code: 'WELCOME15' })
     for (const t of tickets) t.vars = vars(t)
     const cats = ['Where is my order', 'Subscription', 'Refund / return', 'Product question', 'Not working / results', 'Cancel order', 'Marked delivered, not received', 'Billing / payment', 'Address change', 'Damaged / wrong / missing item', 'Discount / offer', 'Adverse reaction', 'Chargeback / dispute threat', 'Other']
     const defaults = Object.fromEntries(cats.map((c) => [c, (tplDemo.find((x) => x.categories.includes(c)) || tplDemo[tplDemo.length - 1]).key]))
