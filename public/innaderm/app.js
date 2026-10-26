@@ -398,7 +398,7 @@
         const orderDate = nx.orderBy <= 0 ? 'today' : fmtDayY(day(nx.orderBy))
         lines.push(h('div', { class: 'pnext' },
           h('div', { class: 'lbl', text: 'Next order' }),
-          h('p', null, h('b', { text: `${fmtInt(nx.qty)} finished units` }), nx.orderBy <= 0 ? ', ordered ' : ', ordered by ', h('b', { class: nx.orderBy <= 0 ? 'bad-t' : '', text: orderDate }), `, to land by ${fmtDayY(day(nx.landBy))} (${nx.lead}-day lead ${nx.lead === P.leadW ? 'with bags ready' : 'because bags are not ready'}).`, nx.lateByDays ? h('span', { class: 'bad-t', text: ` That date has passed: ordered today it lands ${nx.lateByDays} days later than it should.` }) : null),
+          h('p', null, h('b', { text: `${fmtInt(nx.qty)} finished units` }), nx.orderBy <= 0 ? ', ordered ' : ', ordered by ', h('b', { class: nx.orderBy <= 0 ? 'bad-t' : '', text: orderDate }), `, to land by ${fmtDayY(day(nx.landBy))} (${nx.lead}-day lead ${nx.lead === P.leadW ? 'with bags ready' : 'because bags are not ready'}).`, nx.lateByDays ? h('span', { class: 'bad-t', text: ` That date has passed: ordered today it lands ${nx.lateByDays} day${nx.lateByDays === 1 ? '' : 's'} later than it should.` }) : null),
           h('p', { class: 'muted', text: `Quantity covers 30 days + ${P.safety} days safety after it lands, at the demand above${S.moq_finished ? `, MOQ ${fmtInt(S.moq_finished)}` : ''}.` }),
           h('p', null, h('b', { text: 'Bags: ' }), nx.bagShort
             ? `the order needs ${fmtInt(nx.bagsNeeded)} bags and about ${fmtInt(A.bagsSpare)} will be spare after the waiting batch, so order `
@@ -410,10 +410,32 @@
       }
       return h('div', { class: 'card pcol' }, h('h3', { text: sc.label }), ...lines)
     }
+    // At a glance: six cards for the scenario on the scale slider, one line of deliveries.
+    const sc = P.scaled || P.steady, st = P.steady
+    const shortD = (k) => (k == null ? null : addDays(k).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))
+    const sub = (text, cls = 'muted') => h('div', { class: 'delta' }, h('span', { class: cls, text }))
+    const pendingUnits = A.finished.reduce((a, x) => a + (x.units || 0), 0)
+    const nx = sc.next
+    const outSoon = sc.out != null && sc.out < 30
+    sec.append(h('div', { class: 'kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(165px,1fr))' },
+      tile('Free stock today', fmtInt(dec.finished), 'units', sub(`${fmtInt(dec.backlog)} owed to orders`), null),
+      tile('Selling per day', fmtInt(sc.perDay), 'units', sub(P.scaled ? `${fmtInt(st.perDay)} without scaling` : 'no scaling'), null),
+      tile('Runs out', sc.out == null ? 'Not soon' : addDays(sc.out).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), sc.out == null ? null : String(addDays(sc.out).getFullYear()), sub(sc.late.length ? 'before a batch lands' : sc.out == null ? `beyond ${PLAN_DAYS} days` : P.scaled && st.out != null ? `${shortD(st.out)} without scaling` : `incl. ${fmtInt(pendingUnits)} on the way`, sc.late.length || outSoon ? 'down' : 'muted'), null),
+      tile('Order next', nx ? fmtInt(nx.qty) : '–', nx ? 'units' : '', sub(nx ? (nx.orderBy <= 0 ? `today · lands ${shortD(nx.landBy + nx.lateByDays)}` : `by ${shortD(nx.orderBy)}`) : 'nothing needed', nx && nx.orderBy <= 3 ? 'down' : 'muted'), null),
+      tile('Bags to order', nx ? (nx.bagShort ? fmtInt(ceil100(nx.bagShort)) : 'None') : '–', nx?.bagShort ? 'bags' : '', sub(`${fmtInt(A.bagsSpare)} spare after batch 2${A.bagsOnHandKnown ? '' : '*'}`, nx?.bagShort ? 'down' : 'muted'), null),
+      tile('Scale room', `${P.maxN}${P.maxN === MAX_SCALE ? '+' : ''}`, P.maxN === 1 ? 'day' : 'days', sub(`at ${S.scale_pct}%/day`), null)))
+    // One line: what is on the way and whether it lands in time.
+    const lateIds = new Set(sc.late.map((g) => g.a.id))
+    const ways = [...A.finished.map((x) => ({ t: `${fmtInt(x.units)} units`, d: x.eta, est: x.estimated, bad: lateIds.has(x.id) })), ...A.bags.map((x) => ({ t: `${fmtInt(x.units)} bags`, d: x.eta, est: false }))]
+      .sort((a, b) => String(a.d || '9').localeCompare(String(b.d || '9')))
+    if (ways.length) sec.append(h('div', { class: 'pway' }, h('b', { text: 'On the way: ' }),
+      ...ways.flatMap((w, i) => [i ? h('span', { class: 'sep', text: ' · ' }) : null, h('span', { class: w.bad ? 'bad-t' : '' }, `${w.t} ${w.d ? (w.est ? '~' : '') + new Date(w.d + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '(no date)'}${w.bad ? ' (too late)' : ''}`)]),
+      A.bagsOnHandKnown ? null : h('span', { class: 'muted', text: '   *bags at the factory not entered in Settings' })))
+    // Everything else on request.
     const cols = h('div', { class: 'pcols' }, one(P.steady), P.scaled ? one(P.scaled) : null)
-    sec.append(cols)
+    const more = h('details', { class: 'pmore' }, h('summary', { text: 'Show the workings (timeline, bags, split option)' }))
+    more.append(cols)
     // Timeline of what happens when, for the scenario on the slider.
-    const sc = P.scaled || P.steady
     const rows = []
     rows.push([fmtDayY(addDays(0)), 'Today: free stock', '', fmtInt(dec.finished)])
     for (const e of sc.sim.events) rows.push([fmtDayY(new Date(e.a.eta + 'T00:00:00')), `${e.a.item === 'finished' ? 'Batch lands' : e.a.item}${e.a.estimated ? ' (estimated)' : ''}${e.a.note ? ': ' + e.a.note : ''}`, '+' + fmtInt(e.a.units), `${fmtInt(Math.max(0, e.before))} → ${fmtInt(Math.max(0, e.before) + e.a.units)}${e.before < 0 ? ` (${fmtInt(-e.before)} orders waiting)` : ''}`])
@@ -422,11 +444,12 @@
     if (sc.out != null) rows.push([fmtDayY(day(sc.out)), 'Runs out if nothing more is ordered', '', '0'])
     // Stable sort by date; the 'Today: free stock' row stays first on its day.
     rows.sort((a, b) => (Date.parse(a[0]) || 0) - (Date.parse(b[0]) || 0) || (b[1].startsWith('Today') - a[1].startsWith('Today')))
-    sec.append(h('div', { class: 'card', style: 'margin-top:14px' }, h('h3', { text: `Timeline (${sc.label.toLowerCase()})` }), h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl ptl' },
+    more.append(h('div', { class: 'card', style: 'margin-top:14px' }, h('h3', { text: `Timeline (${sc.label.toLowerCase()})` }), h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl ptl' },
       h('thead', null, h('tr', null, ['Date', 'What happens', 'Units', 'Free stock'].map((x, i) => h('th', { class: i >= 2 ? 'num' : '', text: x })))),
       h('tbody', null, rows.map((r) => h('tr', null, r.map((c, i) => h('td', { class: i >= 2 ? 'num' : '', text: c })))))))))
-    sec.append(h('div', { class: 'pscale card', style: 'margin-top:14px' }, h('h3', { text: 'How far can we scale?' }),
+    more.append(h('div', { class: 'pscale card', style: 'margin-top:14px' }, h('h3', { text: 'How far can we scale?' }),
       h('p', null, `At ${S.scale_pct}%/day, stock (with the pending batches) holds for `, h('b', { text: `${P.maxN}${P.maxN === MAX_SCALE ? '+' : ''} day${P.maxN === 1 ? '' : 's'} of scaling` }), ` without running out before an order placed today could land (${P.leadW}-day lead + ${P.safety} days safety). Move the scale slider below to test other runs; both columns above update.`)))
+    sec.append(more)
     return sec
   }
 

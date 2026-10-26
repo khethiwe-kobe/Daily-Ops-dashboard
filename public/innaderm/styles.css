@@ -416,3 +416,8 @@ footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display:
 .plan .bad-t { color: var(--bad); }
 .plan .pscale p { margin: 0; font-size: 13.5px; }
 .plan .ptl td { vertical-align: top; }
+.plan .pway { margin-top: 12px; font-size: 13px; color: var(--ink-2); }
+.plan .pway .sep { color: var(--muted); }
+.plan .pmore { margin-top: 12px; }
+.plan .pmore > summary { cursor: pointer; font-size: 13px; color: var(--ink-2); font-weight: 500; padding: 4px 0; }
+.plan .pmore[open] > summary { margin-bottom: 10px; }
