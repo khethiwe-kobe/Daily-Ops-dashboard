@@ -347,3 +347,26 @@ footer.foot { margin-top: 36px; font-size: 11.5px; color: var(--muted); display:
 .tdetail .msg p, .tdetail details p { overflow-wrap: anywhere; }
 .tdetail .note { font: 13px/1.5 Poppins, system-ui, sans-serif; }
 .tdetail .work select { max-width: 100%; }
+
+/* Refund matrix: ticket box and tab */
+.refund { margin-top: 14px; border-top: 1px dashed var(--hair); padding-top: 12px; font-size: 12.5px; }
+.refund .rchecks { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; }
+.refund .rchecks li { overflow-wrap: anywhere; }
+.refund .rchecks .tag { min-width: 18px; text-align: center; }
+.refund .rdecide { margin: 6px 0 0; }
+.refund .rcalvin { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--bad-bg); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.refund .rok { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--good-bg); }
+.matrix h2 { font-size: 15px; margin: 0; }
+.matrix .policy { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
+.matrix .policy dt { font-weight: 600; }
+.matrix .policy dd { margin: 0; color: var(--ink-2); }
+@media (max-width: 700px) { .matrix .policy { grid-template-columns: 1fr; } .matrix .policy dd { margin-bottom: 6px; } }
+.matrix .mhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.matrix .search { margin-left: auto; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 7px 10px; min-width: 240px; font-size: 13px; }
+@media (max-width: 700px) { .matrix .search { margin-left: 0; width: 100%; } }
+.matrix .mtbl { min-width: 860px; }
+.matrix .mtbl td { vertical-align: top; line-height: 1.45; }
+.matrix .mtbl tr.hl td { background: var(--warn-bg); }
+.matrix .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.matrix .grid2 ul, .matrix .grid2 ol { margin: 8px 0 0; padding-left: 18px; font-size: 13px; display: grid; gap: 4px; }
+.tright .warns .tag { white-space: normal; overflow-wrap: anywhere; }

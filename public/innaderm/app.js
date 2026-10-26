@@ -27,7 +27,7 @@
     drawer: false,
     keys: null,
     newKey: null,
-    view: ['ops', 'cs', 'board'].includes(params.get('tab')) ? params.get('tab') : ['cs', 'board'].includes(safeGet(LS_VIEW)) ? safeGet(LS_VIEW) : 'ops',
+    view: ['ops', 'cs', 'board', 'matrix'].includes(params.get('tab')) ? params.get('tab') : ['cs', 'board', 'matrix'].includes(safeGet(LS_VIEW)) ? safeGet(LS_VIEW) : 'ops',
     board: null,
     boardLoading: false,
     boardError: null,
@@ -125,6 +125,7 @@
   async function load() {
     if (state.view === 'cs') return loadCs()
     if (state.view === 'board') return loadBoard()
+    if (state.view === 'matrix') return render()
     if (DEMO) { state.data = demoData(); render(); return }
     state.loading = true; state.error = null; render()
     try {
@@ -395,7 +396,7 @@
     const app = $('#app')
     app.replaceChildren()
     if (!state.me) return app.append(loginView())
-    app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : mainView(), drawer())
+    app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : state.view === 'matrix' ? matrixView() : mainView(), drawer())
   }
 
   function loginView() {
@@ -443,12 +444,12 @@
       const at = state.board?.sync?.lastIngestAt
       sync = at ? h('span', { class: 'pill', title: 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
     }
-    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : !state.data) load(); else render() }
-    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
+    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'matrix') return; if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : !state.data) load(); else render() }
+    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
     return h('header', { class: 'top' }, h('div', { class: 'top-in' },
       h('div', { class: 'brand' }, h('div', { class: 'mark', text: 'IN' }), h('div', null, h('span', { class: 'name', text: 'Innaderm' }), h('span', { class: 'sub', text: ' Ops' }))),
       tabs,
-      state.view === 'board' ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
+      state.view === 'board' || state.view === 'matrix' ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
       sync,
       h('div', { class: 'user' },
         h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: state.me.role })),
@@ -1186,12 +1187,14 @@
       h('label', null, 'Type ', h('select', { onchange: (e) => saveTicket(t, { category: e.target.value === t.autoCategory ? '' : e.target.value }) }, Object.keys(b.defaults).map((c) => h('option', { value: c, selected: c === t.category, text: c })))),
       h('textarea', { class: 'note', rows: 2, placeholder: 'Internal note (not sent to the customer)', onchange: (e) => saveTicket(t, { note: e.target.value }) }, t.note || '')))
     if (t.statusBy) left.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:4px', text: `Last change by ${t.statusBy} ${agoTxt(t.statusAt)}` }))
-    left.append(calvinBox(t, b))
-    box.append(left, composer(t, b))
+    const ra = window.InnRefund ? window.InnRefund.assess(t) : null
+    if (ra) left.append(refundBox(t, ra))
+    left.append(calvinBox(t, b, ra))
+    box.append(left, composer(t, b, ra))
     return box
   }
 
-  function composer(t, b) {
+  function composer(t, b, ra) {
     state.compose = state.compose || {}
     const c = state.compose[t.id] || (state.compose[t.id] = { template: b.defaults[t.category] || 'general', text: null })
     const tpl = b.templates.find((x) => x.key === c.template) || b.templates[0]
@@ -1223,8 +1226,9 @@
     const pick = h('select', { 'aria-label': 'Template', onchange: (e) => { c.template = e.target.value; c.text = null; render() } },
       b.templates.map((x) => h('option', { value: x.key, selected: x.key === c.template, text: `${x.title}${x.approved ? '' : ' (not approved)'}` })))
     const reset = h('button', { class: 'tbtn', text: 'Reset', title: 'Refill from the template', onclick: () => { c.text = null; render() } })
+    const useMatrix = ra && ra.reply ? h('button', { class: 'tbtn', text: `Use ${ra.row} reply`, title: 'Fill in the refund-matrix reply for this ticket', onclick: () => { c.text = ra.reply.replace(/\{agent\}/g, me || '[YOUR NAME]'); render() } }) : null
     const box = h('div', { class: 'tright' },
-      h('div', { class: 'lbl' }, 'Reply ', pick, ' ', reset),
+      h('div', { class: 'lbl' }, 'Reply ', pick, ' ', reset, useMatrix ? ' ' : null, useMatrix),
       tpl?.checklist ? h('div', { class: 'check' }, h('b', { text: 'Before sending: ' }), tpl.checklist) : null,
       !me ? h('div', { class: 'banner', style: 'margin:6px 0', text: 'Set your sign-off name in "Signing as" above.' }) : null,
       ta, warnBox,
@@ -1234,7 +1238,7 @@
     return box
   }
 
-  function calvinBox(t, b) {
+  function calvinBox(t, b, ra) {
     const box = h('div', { class: 'calvin' })
     if (t.clickup) {
       box.append(h('div', { class: 'lbl' }, 'With Calvin in ClickUp ', h('a', { href: t.clickup.url, target: '_blank', rel: 'noopener', text: 'Open task' }), t.clickup.status ? ` · ${t.clickup.status}` : ''))
@@ -1248,8 +1252,9 @@
         b.clickupReady || DEMO ? h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Refunds, pausing subscriptions in Loop, anything you are unsure of.' }) : h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Add INNADERM_CLICKUP_TOKEN in Vercel to turn this on.' }))
       return box
     }
-    const reason = h('select', null, ['Refund approval', 'Pause or cancel subscription (Loop)', 'Replacement / reship', 'Adverse reaction', 'Chargeback or dispute', 'Not sure how to answer', 'Other'].map((r) => h('option', { value: r, text: r, selected: (r === 'Adverse reaction' && t.flags.includes('reaction')) || (r === 'Chargeback or dispute' && t.flags.includes('chargeback')) })))
-    const question = h('textarea', { rows: 3, placeholder: 'What do you need Calvin to decide or do? e.g. "Approve a refund of the 1-pack ($59.99)?" or "Please pause her subscription in Loop."' })
+    const preReason = ra?.escalate ? (ra.row === 'R7' ? 'Adverse reaction' : ['R12', 'R13'].includes(ra.row) ? 'Chargeback or dispute' : ['R3', 'R4', 'R5'].includes(ra.row) ? 'Replacement / reship' : 'Refund approval') : null
+    const reason = h('select', null, ['Refund approval', 'Pause or cancel subscription (Loop)', 'Replacement / reship', 'Adverse reaction', 'Chargeback or dispute', 'Not sure how to answer', 'Other'].map((r) => h('option', { value: r, text: r, selected: preReason ? r === preReason : (r === 'Adverse reaction' && t.flags.includes('reaction')) || (r === 'Chargeback or dispute' && t.flags.includes('chargeback')) })))
+    const question = h('textarea', { rows: 3, placeholder: 'What do you need Calvin to decide or do? e.g. "Approve a refund of the 1-pack ($59.99)?" or "Please pause her subscription in Loop."' }, ra?.escalate ? `Refund matrix ${ra.row} (${ra.def.title}). ${ra.escalate}. Recommended: ${ra.decision}${ra.order ? ` Order ${ra.order.name}, $${ra.order.total.toFixed(2)} incl. shipping.` : ''}` : '')
     const position = h('input', { type: 'text', placeholder: 'What the customer wants (optional)' })
     const msg = h('span', { class: 'msg' })
     const go = h('button', { class: 'btn sm', text: 'Create ClickUp task for Calvin', onclick: async () => {
@@ -1328,6 +1333,52 @@
     return sec
   }
 
+  // ---------- Refund matrix (public/innaderm/refund.js) ----------
+  const CHECK_CLS = { ok: 'good', bad: 'bad', warn: 'warn', info: '' }
+  const CHECK_TXT = { ok: '✓', bad: '✕', warn: '?', info: '·' }
+
+  function refundBox(t, ra) {
+    const box = h('div', { class: 'refund' })
+    box.append(h('div', { class: 'lbl' }, 'Refund check ', tag(ra.row, 'warn'), ' ', h('span', { text: ra.def.title }), ' ',
+      h('a', { href: '#', class: 'muted', style: 'font-size:11.5px', text: 'see matrix', onclick: (e) => { e.preventDefault(); state.matrixRow = ra.row; state.view = 'matrix'; safeSet(LS_VIEW, 'matrix'); render(); window.scrollTo(0, 0) } })))
+    box.append(h('ul', { class: 'rchecks' }, ra.checks.map((c) => h('li', null, h('span', { class: 'tag ' + (CHECK_CLS[c.state] || ''), text: CHECK_TXT[c.state] || '·' }), h('b', { text: ' ' + c.label + ' ' }), h('span', { text: c.value })))))
+    box.append(h('p', { class: 'rdecide' }, h('b', { text: 'Policy: ' }), ra.def.policy))
+    box.append(h('p', { class: 'rdecide' }, h('b', { text: 'Next step: ' }), ra.decision))
+    if (ra.escalate) {
+      box.append(h('div', { class: 'rcalvin' }, h('b', { text: 'Needs Calvin: ' }), ra.escalate,
+        !t.clickup ? h('button', { class: 'btn sm ghost', style: 'margin-left:8px', text: 'Send to Calvin', onclick: () => { state.escalating = t.id; render() } }) : null))
+    } else box.append(h('div', { class: 'rok', text: 'The team can handle this without Calvin.' }))
+    return box
+  }
+
+  function matrixView() {
+    const R = window.InnRefund
+    const wrap = h('div', { class: 'wrap matrix' })
+    if (!R) { wrap.append(h('div', { class: 'banner bad', text: 'The refund matrix did not load. Refresh the page.' })); return wrap }
+    wrap.append(h('div', { class: 'banner' + (R.STATUS.approved ? ' info' : '') }, h('b', { text: R.STATUS.approved ? 'Approved by Calvin. ' : 'Draft. ' }), R.STATUS.note))
+    wrap.append(h('div', { class: 'card', style: 'margin-top:16px' },
+      h('h2', { text: 'Published refund policy' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 10px' }, `innaderm.com/policies/refund-policy, last updated ${R.STATUS.policyUpdated}. The page is what customers and card networks hold us to: where this tab and the page differ, the page wins.`),
+      h('dl', { class: 'policy' }, R.POLICY.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]))))
+    const needle = (state.matrixSearch || '').toLowerCase()
+    const rows = R.ROWS.filter((r) => !needle || [r.id, r.title, r.policy, r.team, r.calvin].join(' ').toLowerCase().includes(needle))
+    const tbl = h('table', { class: 'tbl mtbl' },
+      h('thead', null, h('tr', null, ['#', 'Situation', 'Policy says', 'Team decision (no Calvin)', 'Escalate to Calvin when'].map((x) => h('th', { text: x })))),
+      h('tbody', null, rows.map((r) => h('tr', { id: 'm-' + r.id, class: state.matrixRow === r.id ? 'hl' : '' },
+        h('td', null, h('b', { text: r.id })), h('td', null, h('b', { text: r.title })), h('td', { text: r.policy }), h('td', { text: r.team }), h('td', { text: r.calvin })))))
+    wrap.append(h('div', { class: 'card', style: 'margin-top:16px' },
+      h('div', { class: 'mhead' }, h('h2', { text: 'The matrix' }),
+        h('input', { class: 'search', type: 'search', placeholder: 'Search: lost, renewal, rash, R8…', value: state.matrixSearch || '', oninput: (e) => { state.matrixSearch = e.target.value; clearTimeout(state._ms); state._ms = setTimeout(() => { render(); const el = $('.matrix .search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) } }, 200) } })),
+      h('p', { class: 'muted', style: 'margin:2px 0 10px' }, 'Before any row, check: is it their first order, the carrier delivery date, any earlier guarantee refund (same person, household, address or card), any chargeback. Open a ticket on the Support board to see these filled in from Shopify.'),
+      h('div', { style: 'overflow:auto' }, tbl)))
+    wrap.append(h('div', { class: 'grid2', style: 'margin-top:16px' },
+      h('div', { class: 'card' }, h('h2', { text: 'Always send to Calvin' }), h('ul', null, R.ALWAYS_CALVIN.map((x) => h('li', { text: x })))),
+      h('div', { class: 'card' }, h('h2', { text: R.STATUS.approved ? 'Decided' : 'Waiting on Calvin' }), h('ol', null, R.DECISIONS.map((x) => h('li', { text: x }))))))
+    wrap.append(h('p', { class: 'muted', style: 'margin-top:12px;font-size:11.5px', text: 'Built from the published policy and 116 past refund cases in support@innaderm.com (2 Jun to 24 Oct 2026). Suggestions only: nothing here refunds, cancels or sends anything. A person does the action, checks it happened, then sends.' }))
+    if (state.matrixRow) setTimeout(() => { const el = document.getElementById('m-' + state.matrixRow); if (el) el.scrollIntoView({ block: 'center' }); state.matrixRow = null }, 50)
+    return wrap
+  }
+
   function demoBoard() {
     const ago = (h2) => new Date(Date.now() - h2 * 3600e3).toISOString()
     const mk = (id, name, email, subject, category, last, waiting, extra = {}) => ({
@@ -1343,6 +1394,8 @@
       mk('d4', 'Tyler Brooks', 'tyler@example.com', 'Refund', 'Refund / return', 'It has not done anything for my dandruff after 3 weeks, I want my money back.', 52, { status: 'With Calvin', statusSet: true, clickup: { id: 'x', url: 'https://app.clickup.com', status: 'founder responded', calvinReplied: true, comments: [{ by: 'Calvin Beck', fromCalvin: true, at: ago(2), text: 'Offer 3 packs at 50% first. If he insists, refund the 1-pack.' }] } }),
       mk('d5', 'Kevin Ng', 'kevin@example.com', 'Re: Your order', 'Where is my order', 'Thanks, but tracking has not moved in a week.', 1.5, { reopened: true, statusSet: true, status: 'Done', orders: [ord('#INN17501', { fulfilledAt: ago(170) })], drafts: [] }),
       mk('d6', 'Patrice Hall', 'patrice@example.com', 'Question before buying', 'Product question', 'Can I take this with my thyroid medication?', 20),
+      mk('d7', 'Juhi Patel', 'juhi@example.com', '90 day refund request', 'Not working / results', 'I took it every morning for the full 90 days and my scalp is the same. I would like my money back under the guarantee.', 26, { orders: [ord('#INN16399', { total: 79.98, createdAt: ago(24 * 100), fulfilledAt: ago(24 * 92), deliveredAt: ago(24 * 82), subscription: true })], orderNumbers: ['#INN16399'], orderCount: 1 }),
+      mk('d8', 'Steve Marsh', 'steve@example.com', 'Re: Order #INN18462 confirmed', 'Cancel order', 'I want to cancel this order please, I only placed it this morning.', 4, { orders: [ord('#INN18462', { total: 54.87, createdAt: ago(8), status: 'UNFULFILLED', fulfilledAt: null, trackingNumber: null })], orderNumbers: ['#INN18462'], orderCount: 1 }),
     ]
     const tplDemo = [
       { key: 'wismo', title: 'Where is my order', categories: ['Where is my order'], approved: true, checklist: 'Check the order line matches Shopify.', body: "Hi {first_name},\n\nThank you for reaching out, and sorry for the wait.\n\n{order_status}\n\nIf anything looks off, just reply here and I'll chase it for you.\n\n{agent}\nInnaderm" },
