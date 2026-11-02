@@ -1610,7 +1610,8 @@
     try { state.ser = await api('/api/serentia/stock') } catch (e) { state.serError = e.message }
     state.serLoading = false; render()
   }
-  const SER_STATUS = { out: ['Out of stock', 'bad'], reorder: ['Reorder now', 'bad'], soon: ['Reorder soon', 'warn'], ok: ['OK', 'good'], unknown: ['No sales rate', ''] }
+  const SER_STATUS = { out: ['Out of stock', 'bad'], reorder: ['Reorder now', 'bad'], soon: ['Reorder soon', 'warn'], ok: ['OK', 'good'], unknown: ['No sales rate', ''], discontinued: ['Discontinued', ''] }
+  const OTHER_STATUS = { out: ['Out of stock', 'bad'], low: ['Low stock · cover unknown', 'warn'], ok: ['', ''] }
   const dayTxt = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '–')
 
   function serentiaView() {
@@ -1648,9 +1649,9 @@
         h('td', { class: 'num', title: x.rateSource === 'loop' ? 'Loop renewals only (a floor): real sales are higher' : x.sold != null ? `${fmtInt(x.sold)} units in ${x.rateSource === 'manual' ? man?.days : d.settings.baselineDays} days (${x.rateSource === 'manual' ? 'pasted report' : 'Shopify'})` : 'Needs per-shade sales' }, x.rate == null ? '–' : fmt1(x.rate), x.rateSource === 'loop' ? h('small', { class: 'muted', title: 'Renewals only: real sales are higher', text: ' renewals' }) : null),
         h('td', { class: 'num', title: x.renewBeforeRestock != null ? `${fmtInt(x.renewBeforeRestock)} due within the ${x.leadDays}-day lead time` : 'Needs SERENTIA_LOOP_TOKEN' }, x.renew30 == null ? '–' : fmtInt(x.renew30), x.renewBeforeRestock > x.onHand ? ' ' : null, x.renewBeforeRestock > x.onHand ? h('span', { class: 'tag bad', title: 'More renewals due before a new batch can land than units on hand', text: 'short' }) : null),
         h('td', { class: 'num' }, x.needThrough == null ? '–' : fmtInt(x.needThrough), x.shortThrough ? ' ' : null, x.shortThrough ? h('span', { class: 'tag bad', title: `On hand covers ${fmtInt(x.onHand)} of ${fmtInt(x.needThrough)}`, text: `short ${fmtInt(x.shortThrough)}` }) : null),
-        h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : x.cover >= 365 ? '365+' : fmtInt(x.cover) }),
-        h('td', { class: 'num', text: x.status === 'out' ? 'now' : x.cover >= 365 ? '1+ year' : dayTxt(x.runsOut) }),
-        h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : x.cover != null && x.cover - x.leadDays - d.settings.safetyDays >= 365 ? '1+ year' : dayTxt(x.reorderBy) }),
+        h('td', { class: 'num', text: x.status === 'discontinued' ? '–' : x.cover == null ? (x.status === 'out' ? '0' : '–') : x.cover >= 365 ? '365+' : fmtInt(x.cover) }),
+        h('td', { class: 'num', text: x.status === 'discontinued' ? '–' : x.status === 'out' ? 'now' : x.cover >= 365 ? '1+ year' : dayTxt(x.runsOut) }),
+        h('td', { class: 'num', text: x.status === 'discontinued' ? 'no reorder' : ['out', 'reorder'].includes(x.status) ? 'today' : x.cover != null && x.cover - x.leadDays - d.settings.safetyDays >= 365 ? '1+ year' : dayTxt(x.reorderBy) }),
         h('td', null, tag(SER_STATUS[x.status][0], SER_STATUS[x.status][1])),
         h('td', { class: 'num', text: x.suggest ? fmtInt(x.suggest) : '–' })))))
     wrap.append(demandBox(d.demand))
@@ -1661,7 +1662,11 @@
     if (!src.shopify.configured) wrap.append(salesBox(man))
     if (!src.loop?.configured || src.loop?.manual) wrap.append(renewalsBox(src.loop))
     const notes = []
-    const over = S.filter((x) => x.oversold)
+    const gone = S.filter((x) => x.status === 'discontinued')
+    if (gone.length) notes.push(`${gone.map((x) => x.variant).join(', ')} ${gone.length === 1 ? 'is' : 'are'} discontinued: no reorder is suggested.${gone.some((x) => x.oversold) ? ` ${gone.filter((x) => x.oversold).map((x) => `${fmtInt(x.oversold)} ${x.variant}`).join(', ')} order${gone.reduce((a, x) => a + x.oversold, 0) === 1 ? ' was' : 's were'} taken with no stock: offer those customers a refund or a swap to the nearest shade.` : ''} Keep ${gone.length === 1 ? 'it' : 'them'} unbuyable in Shopify (stock 0, "continue selling when out of stock" off, no pre-order).`)
+    const lowOther = (d.others || []).filter((o) => o.status === 'low')
+    if (lowOther.length) notes.push(`${lowOther.map((o) => `${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''} (${fmtInt(o.count)})`).join(', ')}: low at Zendrop and days of cover unknown, because its sales are not tracked here. Turn on inventory tracking for it in Shopify and check how fast it sells before it runs out.`)
+    const over = S.filter((x) => x.oversold && x.status !== 'discontinued')
     if (over.length) notes.push(`${over.map((x) => `${x.variant} (${fmtInt(x.oversold)})`).join(', ')}: Zendrop shows a negative count, so orders were taken with no stock behind them. Those customers are waiting; ask Zendrop when the next batch lands, and keep the pre-order widget's dates honest.`)
     const zero = out.filter((x) => !x.oversold)
     if (zero.length) notes.push(`${zero.map((x) => x.variant).join(', ')} ${zero.length === 1 ? 'is' : 'are'} at zero. Make sure the pre-order widget is live for ${zero.length === 1 ? 'it' : 'them'} (Sell when out of stock on, real batch dates), or customers buy a shade that cannot ship.`)
@@ -1680,7 +1685,10 @@
         h('li', { text: src.loop?.manual ? `Renewals: ${src.loop.snapshot ? 'built-in Loop snapshot of ' + fmtDayY(src.loop.savedAt) : `Loop rows pasted ${agoTxt(src.loop.savedAt)} by ${src.loop.by || '?'}`} (${fmtInt(src.loop.monthly)} units a cycle)` : src.loop?.configured ? `Renewals: Loop${src.loop.cachedAt ? `, read ${agoTxt(src.loop.cachedAt)}` : ''}` : 'Renewals: not connected' }),
         h('li', null, 'Live count: ', h('a', { href: 'https://app.zendrop.com/inventory', target: '_blank', rel: 'noopener', text: 'app.zendrop.com/inventory' })),
         h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : man ? `Sales: Shopify report pasted ${agoTxt(man.savedAt)} (${man.days} days)` : 'Sales: not connected yet' }))),
-      (d.others || []).length ? h('div', { class: 'card' }, h('h3', { text: 'Other products at Zendrop' }), tableView(['Product', 'SKU', 'Count'], d.others.map((o) => [`${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''}`, o.sku, fmtInt(o.count)]))) : null))
+      (d.others || []).length ? h('div', { class: 'card' }, h('h3', { text: 'Other products at Zendrop' }), h('table', { class: 'tbl' },
+        h('thead', null, h('tr', null, h('th', { text: 'Product' }), h('th', { text: 'SKU' }), h('th', { class: 'num', text: 'Count' }), h('th', { text: 'Status' }))),
+        h('tbody', null, d.others.map((o) => h('tr', null, h('td', { text: `${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''}` }), h('td', { text: o.sku }), h('td', { class: 'num', text: fmtInt(o.count) }),
+          h('td', null, OTHER_STATUS[o.status]?.[0] ? tag(OTHER_STATUS[o.status][0], OTHER_STATUS[o.status][1]) : null)))))) : null))
     return wrap
   }
 
@@ -1726,7 +1734,7 @@
   // Planned demand: campaign uplift and Black Friday, shared by everyone.
   function demandBox(dm) {
     dm = dm || {}
-    const P = (state.serPlan ||= { upliftPct: dm.upliftPct ?? 0, bfFrom: dm.bfFrom || '', bfTo: dm.bfTo || '', bfMultiplier: dm.bfMultiplier ?? 1, through: dm.through || '' })
+    const P = (state.serPlan ||= { upliftPct: dm.upliftPct ?? 0, bfFrom: dm.bfFrom || '', bfTo: dm.bfTo || '', bfMultiplier: dm.bfMultiplier ?? 1, through: dm.through || '', discontinued: (dm.discontinued || []).join(', ') })
     const msg = h('span', { class: 'msg' })
     const inp = (k, type, w, extra = {}) => h('input', { type, value: P[k], style: `width:${w}`, oninput: (e) => { P[k] = e.target.value }, ...extra })
     const save = h('button', { class: 'btn sm', text: 'Save plan', onclick: async () => {
@@ -1742,7 +1750,8 @@
         h('label', null, 'Campaign uplift ', inp('upliftPct', 'number', '80px', { min: -90, max: 1000, step: 5 }), ' % on every day'),
         h('label', null, 'Black Friday ', inp('bfFrom', 'date', '150px'), ' to ', inp('bfTo', 'date', '150px')),
         h('label', null, 'Black Friday sells ', inp('bfMultiplier', 'number', '70px', { min: 1, max: 50, step: 0.5 }), ' × normal'),
-        h('label', null, 'Plan stock through ', inp('through', 'date', '150px'))),
+        h('label', null, 'Plan stock through ', inp('through', 'date', '150px')),
+        h('label', null, 'Discontinued (no reorder) ', inp('discontinued', 'text', '220px', { placeholder: 'e.g. Honey Almond' }))),
       h('div', { class: 'actions', style: 'display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap' }, save, msg))
   }
 
@@ -1774,18 +1783,19 @@
     const shades = rows.map((r) => {
       const net = r.parts.reduce((a, p) => a + p.count, 0), onHand = Math.max(0, net), oversold = net < 0 ? -net : 0
       const cover = onHand / r.rate
-      const status = onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
+      const status = r.variant === 'Honey Almond' ? 'discontinued' : onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
       return { ...r, onHand, oversold, sold: Math.round(r.rate * 31), rateSource: 'manual', cover: onHand ? cover : null, status,
         runsOut: new Date(now + cover * 86400e3).toISOString(), reorderBy: new Date(now + Math.max(0, cover - point) * 86400e3).toISOString(),
         suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - onHand + oversold) / 100) * 100 : 0 }
-    }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
+    }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4, discontinued: 5 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4, discontinued: 5 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
     const suggest = shades.reduce((a, x) => a + x.suggest, 0)
-    for (const x of shades) { const days = Math.round((Date.parse('2026-12-31') - Date.now()) / 864e5) + 1; x.needThrough = Math.ceil(x.rate * (Math.max(0, days) + 5 * 2) + x.oversold); x.shortThrough = Math.max(0, x.needThrough - x.onHand) }
-    return { demand: { upliftPct: 0, bfFrom: '2026-11-27', bfTo: '2026-12-01', bfMultiplier: 3, through: '2026-12-31', saved: false }, settings: { baselineDays: 31, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
+    for (const x of shades) { if (x.status === 'discontinued') { Object.assign(x, { needThrough: null, shortThrough: null, rate: null, renew30: null, renewBeforeRestock: null, runsOut: null, reorderBy: null }); continue } const days = Math.round((Date.parse('2026-12-31') - Date.now()) / 864e5) + 1; x.needThrough = Math.ceil(x.rate * (Math.max(0, days) + 5 * 2) + x.oversold); x.shortThrough = Math.max(0, x.needThrough - x.onHand) }
+    const live = shades.filter((x) => x.status !== 'discontinued')
+    return { demand: { upliftPct: 0, bfFrom: '2026-11-27', bfTo: '2026-12-01', bfMultiplier: 3, through: '2026-12-31', discontinued: ['Honey Almond'], saved: false }, settings: { baselineDays: 31, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
       sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: false }, loop: { configured: true, manual: true, subscriptions: 64, monthly: 73, units: 59, savedAt: new Date().toISOString(), by: 'Demo' },
         manual: { days: 31, period: '26 Sept to 26 Oct 2026', savedAt: new Date().toISOString(), by: 'Demo', creamTotal: rows.reduce((a, r) => a + Math.round(r.rate * 31), 0), shadeLevel: true, matched: rows.map((r) => ({ shade: r.variant, tubes: Math.round(r.rate * 31) })), skipped: ['Serentia™ Essence Blending Brush', 'Hydra-Prep Cream'] } },
-      others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0 }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64 }],
-      shades, totals: { needThrough: shades.reduce((a, x) => a + x.needThrough, 0), shortThrough: shades.reduce((a, x) => a + x.shortThrough, 0), renew30: rows.reduce((a, r) => a + r.renew30, 0), subscriptions: 64, onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
+      others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0, status: 'out' }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64, status: 'low' }],
+      shades, totals: { needThrough: live.reduce((a, x) => a + x.needThrough, 0), shortThrough: live.reduce((a, x) => a + x.shortThrough, 0), renew30: live.reduce((a, x) => a + x.renew30, 0), subscriptions: 64, onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: live.reduce((a, x) => a + x.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
   }
 
   // ---------- Refund matrix (public/innaderm/refund.js) ----------
