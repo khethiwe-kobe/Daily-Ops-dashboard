@@ -1,5 +1,5 @@
 import { ingest } from '../../../../../lib/innaderm/cs'
-import { scriptAuthorised, autoDraft } from '../../../../../lib/innaderm/csboard'
+import { scriptAuthorised, autoDraft, refreshDrafts } from '../../../../../lib/innaderm/csboard'
 import { getSettings } from '../../../../../lib/innaderm/settings'
 
 export const runtime = 'nodejs'
@@ -15,11 +15,11 @@ export async function POST(request) {
   try {
     const r = await ingest(body)
     // Auto-drafts only for live activity, not the 90-day backfill.
-    let auto = { queued: 0 }
+    let auto = { queued: 0 }, fresh = { refreshed: 0, flagged: 0 }
     if (!body?.backfill) {
-      try { const { settings } = await getSettings(); auto = await autoDraft(r.ids, settings) } catch { /* never block ingest */ }
+      try { const { settings } = await getSettings(); auto = await autoDraft(r.ids, settings); fresh = await refreshDrafts(settings) } catch { /* never block ingest */ }
     }
-    return Response.json({ saved: r.saved, skipped: r.skipped, autoDrafts: auto.queued })
+    return Response.json({ saved: r.saved, skipped: r.skipped, autoDrafts: auto.queued, autoSent: auto.sent || 0, draftsRefreshed: fresh.refreshed, draftsFlagged: fresh.flagged })
   } catch (e) {
     return Response.json({ error: String(e?.message || e).slice(0, 300) }, { status: 500 })
   }

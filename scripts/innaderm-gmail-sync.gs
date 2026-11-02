@@ -149,10 +149,11 @@ function post(threads, mailbox, backfillDone, backfill) {
 
 // Replies queued on the support board, addressed to the customer's latest
 // message: "draft" ones become Gmail drafts for the agent to check and send,
-// "send" ones (Send reply on the board) go to the customer straight away.
-// Runs every minute (and at the start of each sync). The dashboard claims each
+// "send" ones (Send reply on the board, or an auto-sent "where is my order")
+// go to the customer straight away. A refreshed draft deletes the one it
+// replaces (version 3). Runs every minute (and at the start of each sync). The dashboard claims each
 // item as it hands it out, so a reply is never sent twice.
-const SCRIPT_VERSION = 2
+const SCRIPT_VERSION = 3
 function makeDrafts() {
   const lock = LockService.getScriptLock()
   if (!lock.tryLock(1000)) return
@@ -174,6 +175,8 @@ function makeDrafts() {
           last.reply(d.body)
           return { id: d.id, ok: true }
         }
+        // A refreshed draft (the order moved on) replaces the old one.
+        if (d.replaces) { try { GmailApp.getDraft(d.replaces).deleteDraft() } catch (e) { /* already sent or deleted */ } }
         const draft = last.createDraftReply(d.body)
         return { id: d.id, ok: true, draftId: draft.getId() }
       } catch (e) {
