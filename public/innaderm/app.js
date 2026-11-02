@@ -27,7 +27,10 @@
     drawer: false,
     keys: null,
     newKey: null,
-    view: params.get('tab') === 'cs' || (params.get('tab') !== 'ops' && safeGet(LS_VIEW) === 'cs') ? 'cs' : 'ops',
+    view: ['ops', 'cs', 'board', 'matrix', 'serentia'].includes(params.get('tab')) ? params.get('tab') : ['cs', 'board', 'matrix', 'serentia'].includes(safeGet(LS_VIEW)) ? safeGet(LS_VIEW) : 'ops',
+    board: null,
+    boardLoading: false,
+    boardError: null,
     cs: null,
     csLoading: false,
     csError: null,
@@ -101,7 +104,7 @@
   async function api(path, opts = {}) {
     const headers = { Accept: 'application/json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) }
     if (state.token) headers.Authorization = 'Bearer ' + state.token
-    const r = await fetch(API + path, { ...opts, headers, credentials: 'include', body: opts.body ? JSON.stringify(opts.body) : undefined })
+    const r = await fetch(path.startsWith('/api/') ? path : API + path, { ...opts, headers, credentials: 'include', body: opts.body ? JSON.stringify(opts.body) : undefined })
     let json = null
     try { json = await r.json() } catch { json = null }
     if (r.status === 401) { state.token = null; safeSet(LS_TOKEN, null); state.me = null; render(); throw new Error('Signed out') }
@@ -111,7 +114,7 @@
 
   async function boot() {
     applyTheme()
-    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); render(); return }
+    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); state.board = demoBoard(); state.ser = demoSerentia(); render(); return }
     if (state.token || document.cookie.includes('inn_session')) {
       try { state.me = await api('/auth/me') } catch { state.me = null }
     }
@@ -119,8 +122,21 @@
     if (state.me) load()
   }
 
+  // Support keys (e.g. Kashif) see only the Support board and Refund matrix.
+  const ROLE_LABELS = { admin: 'Admin', viewer: 'Viewer', support: 'Customer support' }
+  const roleLabel = (r) => ROLE_LABELS[r] || r
+  const ALL_TABS = [['ops', 'Operations'], ['cs', 'CS metrics'], ['board', 'Support board'], ['matrix', 'Refund matrix'], ['serentia', 'Serentia stock']]
+  const tabsFor = (me) => (me?.role === 'support' ? ALL_TABS.filter(([v]) => v === 'board' || v === 'matrix') : ALL_TABS)
+  function fixView() {
+    if (state.me && !tabsFor(state.me).some(([v]) => v === state.view)) { state.view = 'board'; safeSet(LS_VIEW, 'board') }
+  }
+
   async function load() {
+    fixView()
     if (state.view === 'cs') return loadCs()
+    if (state.view === 'board') return loadBoard()
+    if (state.view === 'matrix') return render()
+    if (state.view === 'serentia') return loadSerentia()
     if (DEMO) { state.data = demoData(); render(); return }
     state.loading = true; state.error = null; render()
     try {
@@ -271,6 +287,172 @@
     return { curve, base, backlog, finished, finishedRaw, packaging, perUnit, safety, need30, sellPerDay, noSales, capped, coverLabel, coverF, coverF0, coverP, leadF, leadP, packagingOk, orderFinished, orderPackaging, orderFinishedBy, orderPackagingBy, verdict, reason, maxN, maxNLabel, stockout }
   }
 
+  // ---------- stock plan: day-by-day projection including pending stock ----------
+  // Free stock today (on hand minus units owed to unfulfilled orders), minus
+  // daily demand, plus each pending batch on its expected date. A batch that
+  // is waiting for bags gets an estimated date: the bags' ETA + the
+  // with-packaging lead time. Bags themselves never become sellable stock;
+  // they only decide how fast the next production run can be.
+  const PLAN_DAYS = 150
+  const dayStart = () => { const t = new Date(); t.setHours(0, 0, 0, 0); return t.getTime() }
+  const dayIdx = (iso) => Math.max(1, Math.round((new Date(iso + 'T00:00:00').getTime() - dayStart()) / 86400e3))
+  const fmtDayY = (dt) => (dt ? new Date(dt).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '–')
+  const ceil100 = (n) => Math.ceil(n / 100) * 100
+
+  function planArrivals(d) {
+    const S = d.settings
+    const pend = (Array.isArray(S.inbound_stock) ? S.inbound_stock : []).filter((x) => x.status !== 'received')
+    const bags = pend.filter((x) => x.item === 'packaging')
+    const bagsEta = bags.map((x) => x.eta).filter(Boolean).sort()[0] || null
+    const leadW = S.lead_finished_with_packaging ?? 10
+    const out = []
+    for (const x of pend.filter((x) => x.item === 'finished')) {
+      let eta = x.eta, estimated = false
+      if (!eta && bagsEta) { const t = new Date(bagsEta + 'T00:00:00'); t.setDate(t.getDate() + leadW); eta = t.toISOString().slice(0, 10); estimated = true }
+      out.push({ ...x, eta, estimated, day: eta ? dayIdx(eta) : null })
+    }
+    out.sort((a, b) => (a.day ?? 1e9) - (b.day ?? 1e9))
+    // Bags still free after the batches already waiting for them are made.
+    const bagUnits = bags.reduce((a, x) => a + (x.units || 0), 0)
+    const perUnit = S.packaging_per_unit ?? 1
+    const bagsReserved = out.filter((x) => x.status === 'waiting_packaging').reduce((a, x) => a + (x.units || 0) * perUnit, 0)
+    return { finished: out, bags, bagsEta, bagUnits, bagsSpare: Math.max(0, bagUnits + (d.inventory.packaging.units || 0) - bagsReserved), bagsOnHandKnown: d.inventory.packaging.units != null }
+  }
+
+  // Walk the days: stock level, first day it hits zero, and how short each batch arrives.
+  function simulate(start, curve, arrivals) {
+    let stock = start, outDay = null
+    const events = []
+    for (let k = 1; k <= Math.min(PLAN_DAYS, curve.length); k++) {
+      for (const a of arrivals) if (a.day === k) { events.push({ k, a, before: stock }); stock += a.units || 0 }
+      stock -= curve[k - 1]
+      if (outDay == null && stock < 0) outDay = k - 1 + (stock + curve[k - 1]) / curve[k - 1]
+    }
+    return { outDay, events, end: stock }
+  }
+
+  function stockPlan(d, dec, N) {
+    if (dec.finished == null || dec.noSales || !d.runRate) return null
+    const S = d.settings
+    const arr = planArrivals(d)
+    const dated = arr.finished.filter((x) => x.day != null)
+    const safety = S.safety_days ?? 7
+    const perUnit = S.packaging_per_unit ?? 1
+    const leadW = S.lead_finished_with_packaging ?? 10
+    const leadWo = S.lead_finished_without_packaging ?? 22
+    const scen = (curve, label) => {
+      const sim = simulate(dec.finished, curve, dated)
+      const out = sim.outDay
+      // Gaps: a batch that lands after stock already hit zero.
+      const late = sim.events.filter((e) => e.before < 0).map((e) => ({ a: e.a, short: Math.round(-e.before) }))
+      // Next order: must land `safety` days before the run-out, and cover 30 days + safety after landing.
+      let next = null
+      if (out != null) {
+        const landBy = Math.max(0, out - safety)
+        const bagsOk = arr.bagsSpare > 0
+        const needDays = (from) => sum(curve.slice(Math.floor(from)), 30 + safety)
+        let qty = ceil100(Math.max(0, needDays(landBy)))
+        if (S.moq_finished) qty = Math.max(S.moq_finished, qty)
+        const bagsNeeded = Math.ceil(qty * perUnit)
+        const lead = bagsOk && arr.bagsSpare >= bagsNeeded ? leadW : leadWo
+        const orderBy = landBy - lead
+        const bagShort = Math.max(0, bagsNeeded - arr.bagsSpare)
+        next = { landBy, orderBy, lead, qty, bagsNeeded, bagShort, bagsOrderBy: S.lead_packaging != null ? orderBy - S.lead_packaging : null, lateByDays: orderBy < 0 ? Math.ceil(-orderBy) : 0 }
+      }
+      return { label, curve, sim, out, late, next, perDay: sum(curve, 30) / 30 }
+    }
+    const steady = scen(dec.base, 'No scaling')
+    const scaled = N > 0 ? scen(dec.curve, `Scale ${N} day${N === 1 ? '' : 's'} at ${S.scale_pct}%/day`) : null
+    // How many scale days the plan can take without running out before an order placed today could land.
+    let maxN = 0
+    const guard = leadW + safety
+    for (let n = 0; n <= MAX_SCALE; n++) {
+      const sim = simulate(dec.finished, demandCurve(d, n), dated)
+      if (sim.outDay == null || sim.outDay >= guard) maxN = n; else break
+    }
+    return { arr, steady, scaled, maxN, guard, safety, leadW, leadWo }
+  }
+
+  function planSection(d, dec) {
+    const N = state.scaleDays
+    const P = stockPlan(d, dec, N)
+    const sec = h('section', { class: 'section plan' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Stock plan' }), h('span', { class: 'why', text: 'Is what is on order enough, and arriving in time? What to order next, and by when. Includes pending stock at its expected date.' })))
+    if (!P) { sec.append(h('div', { class: 'setup' }, h('p', { text: dec.reason || 'Needs a finished-goods count and sales history.' }))); return sec }
+    const S = d.settings
+    const day = (k) => addDays(k)
+    const A = P.arr
+    const one = (sc) => {
+      const pending = A.finished.reduce((a, x) => a + (x.units || 0), 0)
+      const lines = []
+      lines.push(h('p', null, h('b', { text: `${fmtInt(dec.finished)} free units today` }), ` (${fmtInt(dec.finishedRaw)} on hand, ${fmtInt(dec.backlog)} already owed to unfulfilled orders). Selling about `, h('b', { text: `${fmtInt(sc.perDay)} a day` }), ` on average over the next 30 days.`))
+      if (pending) lines.push(h('p', null, `Pending: ${A.finished.map((x) => `${fmtInt(x.units)} ${x.day != null ? `${x.estimated ? 'estimated ' : ''}on ${fmtDayY(new Date(x.eta + 'T00:00:00'))}` : '(no date yet)'}`).join(' + ')}.`))
+      const enough = sc.out == null
+      const verdict = enough ? ['good', `Enough for the next ${PLAN_DAYS} days.`]
+        : sc.late.length ? ['bad', `Not enough in time: stock runs out before a batch lands.`]
+        : ['warn', `Pending stock arrives in time, but runs out on ${fmtDayY(day(sc.out))}.`]
+      lines.unshift(h('div', { class: 'pverdict ' + verdict[0], text: verdict[1] }))
+      for (const g of sc.late) lines.push(h('p', { class: 'bad-t' }, `Out of stock before the ${fmtInt(g.a.units)} batch lands on ${fmtDayY(new Date(g.a.eta + 'T00:00:00'))}: about ${fmtInt(g.short)} orders would wait. Push Zendrop/Ava for an earlier date, or slow ads until it lands.`))
+      if (sc.out != null) lines.push(h('p', null, 'With everything pending, stock lasts until ', h('b', { text: fmtDayY(day(sc.out)) }), ` (${fmt1(sc.out)} days).`))
+      const nx = sc.next
+      if (nx) {
+        const orderDate = nx.orderBy <= 0 ? 'today' : fmtDayY(day(nx.orderBy))
+        lines.push(h('div', { class: 'pnext' },
+          h('div', { class: 'lbl', text: 'Next order' }),
+          h('p', null, h('b', { text: `${fmtInt(nx.qty)} finished units` }), nx.orderBy <= 0 ? ', ordered ' : ', ordered by ', h('b', { class: nx.orderBy <= 0 ? 'bad-t' : '', text: orderDate }), `, to land by ${fmtDayY(day(nx.landBy))} (${nx.lead}-day lead ${nx.lead === P.leadW ? 'with bags ready' : 'because bags are not ready'}).`, nx.lateByDays ? h('span', { class: 'bad-t', text: ` That date has passed: ordered today it lands ${nx.lateByDays} day${nx.lateByDays === 1 ? '' : 's'} later than it should.` }) : null),
+          h('p', { class: 'muted', text: `Quantity covers 30 days + ${P.safety} days safety after it lands, at the demand above${S.moq_finished ? `, MOQ ${fmtInt(S.moq_finished)}` : ''}.` }),
+          h('p', null, h('b', { text: 'Bags: ' }), nx.bagShort
+            ? `the order needs ${fmtInt(nx.bagsNeeded)} bags and about ${fmtInt(A.bagsSpare)} will be spare after the waiting batch, so order `
+            : `the order needs ${fmtInt(nx.bagsNeeded)} bags and about ${fmtInt(A.bagsSpare)} will be spare after the waiting batch: enough, no bag order needed.`,
+            nx.bagShort ? h('b', { text: `${fmtInt(ceil100(nx.bagShort))} more bags` }) : null,
+            nx.bagShort ? (nx.bagsOrderBy != null ? ` by ${nx.bagsOrderBy <= 0 ? 'today' : fmtDayY(day(nx.bagsOrderBy))} (${S.lead_packaging}-day bag lead time).` : '. Set the bag lead time in Settings to get an order-by date.') : null,
+            A.bagsOnHandKnown ? null : h('span', { class: 'muted', text: ' (Bags already at the factory are not counted: enter them in Settings.)' })),
+          nx.bagShort && A.bagsSpare > 0 ? h('p', null, h('b', { text: 'Faster option: ' }), `split it. Make ${fmtInt(Math.floor(A.bagsSpare / (S.packaging_per_unit ?? 1)))} units with the spare bags on the ${P.leadW}-day lead (order by ${nx.landBy - P.leadW <= 0 ? 'today' : fmtDayY(day(nx.landBy - P.leadW))}), and the remaining ${fmtInt(Math.max(0, nx.qty - Math.floor(A.bagsSpare / (S.packaging_per_unit ?? 1))))} once the new bags are in.`) : null))
+      }
+      return h('div', { class: 'card pcol' }, h('h3', { text: sc.label }), ...lines)
+    }
+    // At a glance: six cards for the scenario on the scale slider, one line of deliveries.
+    const sc = P.scaled || P.steady, st = P.steady
+    const shortD = (k) => (k == null ? null : addDays(k).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))
+    const sub = (text, cls = 'muted') => h('div', { class: 'delta' }, h('span', { class: cls, text }))
+    const pendingUnits = A.finished.reduce((a, x) => a + (x.units || 0), 0)
+    const nx = sc.next
+    const outSoon = sc.out != null && sc.out < 30
+    sec.append(h('div', { class: 'kpis', style: 'grid-template-columns:repeat(auto-fit,minmax(165px,1fr))' },
+      tile('Free stock today', fmtInt(dec.finished), 'units', sub(`${fmtInt(dec.backlog)} owed to orders`), null),
+      tile('Selling per day', fmtInt(sc.perDay), 'units', sub(P.scaled ? `${fmtInt(st.perDay)} without scaling` : 'no scaling'), null),
+      tile('Runs out', sc.out == null ? 'Not soon' : addDays(sc.out).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }), sc.out == null ? null : String(addDays(sc.out).getFullYear()), sub(sc.late.length ? 'before a batch lands' : sc.out == null ? `beyond ${PLAN_DAYS} days` : P.scaled && st.out != null ? `${shortD(st.out)} without scaling` : `incl. ${fmtInt(pendingUnits)} on the way`, sc.late.length || outSoon ? 'down' : 'muted'), null),
+      tile('Order next', nx ? fmtInt(nx.qty) : '–', nx ? 'units' : '', sub(nx ? (nx.orderBy <= 0 ? `today · lands ${shortD(nx.landBy + nx.lateByDays)}` : `by ${shortD(nx.orderBy)}`) : 'nothing needed', nx && nx.orderBy <= 3 ? 'down' : 'muted'), null),
+      tile('Bags to order', nx ? (nx.bagShort ? fmtInt(ceil100(nx.bagShort)) : 'None') : '–', nx?.bagShort ? 'bags' : '', sub(`${fmtInt(A.bagsSpare)} spare after batch 2${A.bagsOnHandKnown ? '' : '*'}`, nx?.bagShort ? 'down' : 'muted'), null),
+      tile('Scale room', `${P.maxN}${P.maxN === MAX_SCALE ? '+' : ''}`, P.maxN === 1 ? 'day' : 'days', sub(`at ${S.scale_pct}%/day`), null)))
+    // One line: what is on the way and whether it lands in time.
+    const lateIds = new Set(sc.late.map((g) => g.a.id))
+    const ways = [...A.finished.map((x) => ({ t: `${fmtInt(x.units)} units`, d: x.eta, est: x.estimated, bad: lateIds.has(x.id) })), ...A.bags.map((x) => ({ t: `${fmtInt(x.units)} bags`, d: x.eta, est: false }))]
+      .sort((a, b) => String(a.d || '9').localeCompare(String(b.d || '9')))
+    if (ways.length) sec.append(h('div', { class: 'pway' }, h('b', { text: 'On the way: ' }),
+      ...ways.flatMap((w, i) => [i ? h('span', { class: 'sep', text: ' · ' }) : null, h('span', { class: w.bad ? 'bad-t' : '' }, `${w.t} ${w.d ? (w.est ? '~' : '') + new Date(w.d + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '(no date)'}${w.bad ? ' (too late)' : ''}`)]),
+      A.bagsOnHandKnown ? null : h('span', { class: 'muted', text: '   *bags at the factory not entered in Settings' })))
+    // Everything else on request.
+    const cols = h('div', { class: 'pcols' }, one(P.steady), P.scaled ? one(P.scaled) : null)
+    const more = h('details', { class: 'pmore' }, h('summary', { text: 'Show the workings (timeline, bags, split option)' }))
+    more.append(cols)
+    // Timeline of what happens when, for the scenario on the slider.
+    const rows = []
+    rows.push([fmtDayY(addDays(0)), 'Today: free stock', '', fmtInt(dec.finished)])
+    for (const e of sc.sim.events) rows.push([fmtDayY(new Date(e.a.eta + 'T00:00:00')), `${e.a.item === 'finished' ? 'Batch lands' : e.a.item}${e.a.estimated ? ' (estimated)' : ''}${e.a.note ? ': ' + e.a.note : ''}`, '+' + fmtInt(e.a.units), `${fmtInt(Math.max(0, e.before))} → ${fmtInt(Math.max(0, e.before) + e.a.units)}${e.before < 0 ? ` (${fmtInt(-e.before)} orders waiting)` : ''}`])
+    for (const b of A.bags) rows.push([b.eta ? fmtDayY(new Date(b.eta + 'T00:00:00')) : '–', `Bags reach the factory${b.note ? ': ' + b.note : ''}`, '+' + fmtInt(b.units) + ' bags', '(not sellable)'])
+    if (sc.next) rows.push([fmtDayY(day(Math.max(0, sc.next.orderBy))), sc.next.orderBy <= 0 ? 'Place the next finished-goods order (today: the ideal date has passed)' : 'Place the next finished-goods order (latest date)', fmtInt(sc.next.qty), ''])
+    if (sc.out != null) rows.push([fmtDayY(day(sc.out)), 'Runs out if nothing more is ordered', '', '0'])
+    // Stable sort by date; the 'Today: free stock' row stays first on its day.
+    rows.sort((a, b) => (Date.parse(a[0]) || 0) - (Date.parse(b[0]) || 0) || (b[1].startsWith('Today') - a[1].startsWith('Today')))
+    more.append(h('div', { class: 'card', style: 'margin-top:14px' }, h('h3', { text: `Timeline (${sc.label.toLowerCase()})` }), h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl ptl' },
+      h('thead', null, h('tr', null, ['Date', 'What happens', 'Units', 'Free stock'].map((x, i) => h('th', { class: i >= 2 ? 'num' : '', text: x })))),
+      h('tbody', null, rows.map((r) => h('tr', null, r.map((c, i) => h('td', { class: i >= 2 ? 'num' : '', text: c })))))))))
+    more.append(h('div', { class: 'pscale card', style: 'margin-top:14px' }, h('h3', { text: 'How far can we scale?' }),
+      h('p', null, `At ${S.scale_pct}%/day, stock (with the pending batches) holds for `, h('b', { text: `${P.maxN}${P.maxN === MAX_SCALE ? '+' : ''} day${P.maxN === 1 ? '' : 's'} of scaling` }), ` without running out before an order placed today could land (${P.leadW}-day lead + ${P.safety} days safety). Move the scale slider below to test other runs; both columns above update.`)))
+    sec.append(more)
+    return sec
+  }
+
   // ---------- charts ----------
   const tip = $('#tooltip')
   function showTip(x, y, title, rows) {
@@ -391,7 +573,8 @@
     const app = $('#app')
     app.replaceChildren()
     if (!state.me) return app.append(loginView())
-    app.append(topBar(), state.view === 'cs' ? csView() : mainView(), drawer())
+    fixView()
+    app.append(topBar(), state.view === 'cs' ? csView() : state.view === 'board' ? boardView() : state.view === 'matrix' ? matrixView() : state.view === 'serentia' ? serentiaView() : mainView(), drawer())
   }
 
   function loginView() {
@@ -435,15 +618,19 @@
         sync = h('span', { class: 'pill' + (stale ? ' warn' : ''), title: stale ? 'No sync for over an hour: check the Apps Script executions' : 'Click to refresh', onclick: loadCs, style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(c.sync.lastIngestAt)}`)
       }
     }
-    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'cs' ? !state.cs : !state.data) load(); else render() }
-    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, [['ops', 'Operations'], ['cs', 'Customer service']].map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
+    if (state.view === 'board' && !DEMO) {
+      const at = state.board?.sync?.lastIngestAt
+      sync = at ? h('span', { class: 'pill', title: 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
+    }
+    const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'matrix') return; if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : v === 'serentia' ? !state.ser : !state.data) load(); else render() }
+    const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, tabsFor(state.me).map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
     return h('header', { class: 'top' }, h('div', { class: 'top-in' },
       h('div', { class: 'brand' }, h('div', { class: 'mark', text: 'IN' }), h('div', null, h('span', { class: 'name', text: 'Innaderm' }), h('span', { class: 'sub', text: ' Ops' }))),
       tabs,
-      h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
+      ['board', 'matrix', 'serentia'].includes(state.view) ? null : h('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, PERIODS.map((p) => h('button', { 'aria-pressed': String(p === state.days), text: `${p}d`, onclick: () => { state.days = p; safeSet(LS_DAYS, String(p)); if (state.view === 'cs') state.data = null; else state.cs = null; load() } }))),
       sync,
       h('div', { class: 'user' },
-        h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: state.me.role })),
+        h('div', null, h('div', { class: 'who', text: state.me.name }), h('div', { class: 'role', text: roleLabel(state.me.role) })),
         state.me.role === 'admin' ? h('button', { class: 'icon-btn', title: 'Settings & access keys', 'aria-label': 'Settings', onclick: openDrawer, html: gear }) : null,
         h('button', { class: 'icon-btn', title: 'Light / dark', 'aria-label': 'Toggle theme', onclick: toggleTheme, html: sun }),
         h('button', { class: 'icon-btn', title: 'Sign out', 'aria-label': 'Sign out', onclick: signOut, html: exit }))))
@@ -465,6 +652,7 @@
     if (state.scaleDays == null) state.scaleDays = d.settings.scale_days_default ?? 3
     const dec = decide(d, state.scaleDays)
     wrap.append(decisionStrip(d, dec))
+    wrap.append(planSection(d, dec))
     wrap.append(setupBanners(d))
     wrap.append(fulfilmentSection(d))
     wrap.append(inventorySection(d, dec))
@@ -571,14 +759,44 @@
     const sec = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Inventory on hand' }), h('span', { class: 'why', text: 'Two stock lines, two lead times. Packaging on hand is what turns a 22-day reorder into a 10-day one.' })))
     const grid = h('div', { class: 'grid' })
     const need30 = dec.need30.total
-    grid.append(stockCard('Packaging', dec.packaging, dec.packaging == null ? null : dec.packaging / (dec.perUnit || 1), need30, d.inventory.packaging.countedAt, 'manual count', dec.coverP, d.settings.lead_packaging, dec.perUnit !== 1 ? `${dec.perUnit} per finished unit` : null))
-    grid.append(stockCard('Finished goods', dec.finishedRaw, dec.finished, need30, d.inventory.finished.countedAt, d.inventory.finished.source === 'shopify' ? 'Shopify inventory' : 'manual count', dec.coverF, dec.leadF, dec.backlog ? `${fmtInt(dec.backlog)} units already owed to unfulfilled orders are subtracted` : null))
+    const inb = inboundSummary(d.settings)
+    const pendNote = (n, what) => (n ? `+${fmtInt(n)} ${what} on the way, not counted until ${what === 'units' ? 'they show in Shopify' : 'counted at the factory'}` : null)
+    grid.append(stockCard('Packaging', dec.packaging, dec.packaging == null ? null : dec.packaging / (dec.perUnit || 1), need30, d.inventory.packaging.countedAt, 'manual count', dec.coverP, d.settings.lead_packaging, [dec.perUnit !== 1 ? `${dec.perUnit} per finished unit` : null, pendNote(inb.packaging, 'bags')].filter(Boolean).join(' · ') || null))
+    grid.append(stockCard('Finished goods', dec.finishedRaw, dec.finished, need30, d.inventory.finished.countedAt, d.inventory.finished.source === 'shopify' ? 'Shopify inventory' : 'manual count', dec.coverF, dec.leadF, [dec.backlog ? `${fmtInt(dec.backlog)} units already owed to unfulfilled orders are subtracted` : null, pendNote(inb.finished, 'units')].filter(Boolean).join(' · ') || null))
     const vars = d.inventory.finished.variants || []
     const tracked = vars.filter((v) => v.tracked)
     grid.append(h('div', { class: 'card c4' }, h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'By variant (Shopify)' }), h('div', { class: 'hint', text: tracked.length ? `${tracked.length} tracked variant${tracked.length === 1 ? '' : 's'}` : 'No tracked variants returned' }))),
       tracked.length ? h('div', { style: 'max-height:230px;overflow:auto' }, tableView(['Variant', 'On hand'], tracked.sort((a, b) => b.onHand - a.onHand).map((v) => [v.title || v.sku || v.id, fmtInt(v.onHand)]))) : h('p', { class: 'muted', text: d.integrations.shopify.configured ? 'Turn on inventory tracking for the product in Shopify, or switch finished goods to a manual count in Settings.' : 'Connect Shopify to list variants.' })))
+    if (inb.pending.length) grid.append(inboundCard(d, inb))
     sec.append(grid)
     return sec
+  }
+
+  // Stock on its way. Pending until it shows in Shopify; never part of on-hand or cover.
+  const INBOUND_LABEL = { ordered: 'Ordered', waiting_packaging: 'Waiting for packaging', in_transit: 'In transit', received: 'Received' }
+  function inboundSummary(S) {
+    const list = Array.isArray(S.inbound_stock) ? S.inbound_stock : []
+    const pending = list.filter((x) => x.status !== 'received')
+    const sum = (item) => pending.filter((x) => x.item === item).reduce((a, x) => a + (x.units || 0), 0)
+    return { list, pending, finished: sum('finished'), packaging: sum('packaging') }
+  }
+  function inboundCard(d, inb) {
+    const today = new Date().toISOString().slice(0, 10)
+    return h('div', { class: 'card c12' },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Inbound stock: pending until it shows in Shopify' }),
+        h('div', { class: 'hint', text: `${fmtInt(inb.finished)} finished units and ${fmtInt(inb.packaging)} bags on the way. Not counted in stock on hand, days of cover or the scale decision until marked received in Settings.` }))),
+      h('div', { style: 'overflow:auto' }, h('table', { class: 'dtable' },
+        h('thead', null, h('tr', null, ['What', 'Units', 'Status', 'Going to', 'Expected', 'Note'].map((x) => h('th', { text: x })))),
+        h('tbody', null, inb.pending.map((x) => {
+          const late = x.eta && x.eta < today
+          return h('tr', null,
+            h('td', null, h('b', { text: x.item === 'packaging' ? 'Packaging (bags)' : 'Finished goods' })),
+            h('td', { text: fmtInt(x.units) }),
+            h('td', null, h('span', { class: `status ${x.status === 'in_transit' ? 'good' : x.status === 'waiting_packaging' ? 'warn' : 'na'}`, text: INBOUND_LABEL[x.status] || x.status }), ' ', h('span', { class: 'status warn', text: 'Pending' })),
+            h('td', { text: x.to || '–' }),
+            h('td', null, x.eta ? fmtDateLong(x.eta + 'T12:00:00Z') : '–', x.eta_text ? h('div', { class: 'logic', text: x.eta_text }) : null, late ? h('div', { class: 'logic', style: 'color:var(--bad)', text: 'Past the expected date: check Shopify and mark received in Settings.' }) : null),
+            h('td', { class: 'logic' }, x.note || '', x.source ? h('div', { text: 'Source: ' + x.source }) : null))
+        })))))
   }
   function stockCard(name, units, effective, need30, countedAt, source, cover, lead, note) {
     const ratio = units == null || !need30 ? null : Math.min(1, effective / need30)
@@ -662,6 +880,9 @@
     const daysTo = (dt) => Math.round((dt - Date.now()) / 86400e3)
     if (dec.verdict === 'no') sug.push({ cls: 'bad', ic: '!', t: `Do not scale ${state.scaleDays} days right now.`, s: dec.maxN != null && dec.maxN > 0 ? `Up to ${dec.maxNLabel} is safe. Re-check after the next batch lands.` : 'Place the finished-goods order first.' })
     if (dec.verdict === 'yes' && dec.maxN != null) sug.push({ cls: 'good', ic: '✓', t: `Scaling ${state.scaleDays} days is covered.`, s: dec.maxN === MAX_SCALE ? `Stock covers at least ${MAX_SCALE} days of scaling.` : `Longest safe run is ${dec.maxNLabel}. Beyond that, stock runs out before a reorder could land.` })
+    const inbS = inboundSummary(S)
+    if (inbS.finished) sug.push({ cls: 'warn', ic: 'I', t: `${fmtInt(inbS.finished)} finished units are already on the way (not in Shopify yet).`, s: 'The suggestions below do not count them. Check the inbound list before placing another order.' })
+    if (inbS.packaging) sug.push({ cls: '', ic: 'I', t: `${fmtInt(inbS.packaging)} bags are on the way to the capsule factory.`, s: 'Not counted in packaging on hand until they arrive and are counted.' })
     if (dec.orderFinished > 0 && dec.orderFinishedBy) sug.push({ cls: daysTo(dec.orderFinishedBy) <= 7 ? 'warn' : '', ic: 'F', t: `Order ${fmtInt(dec.orderFinished)} finished units by ${fmtDateLong(dec.orderFinishedBy)}${daysTo(dec.orderFinishedBy) < 0 ? ' (overdue)' : ''}.`, s: `Covers the ${dec.leadF}-day lead time plus 30 days plus ${dec.safety} days safety under the current scenario${S.moq_finished ? ', rounded up to the ' + fmtInt(S.moq_finished) + ' MOQ' : ''}${S.unit_cost_finished ? ' · ~' + fmtMoney(dec.orderFinished * S.unit_cost_finished) : ''}.` })
     if (dec.orderPackaging != null && dec.orderPackaging > 0) sug.push({ cls: dec.orderPackagingBy && daysTo(dec.orderPackagingBy) <= 7 ? 'warn' : '', ic: 'P', t: `Order ${fmtInt(dec.orderPackaging)} packaging units${dec.orderPackagingBy ? ' by ' + fmtDateLong(dec.orderPackagingBy) : ''}.`, s: `Enough for the next finished-goods batch plus packaging lead time${S.moq_packaging ? ', rounded up to the ' + fmtInt(S.moq_packaging) + ' MOQ' : ''}. Packaging on hand is what keeps the finished-goods lead time at ${S.lead_finished_with_packaging} days instead of ${S.lead_finished_without_packaging}.` })
     if (!dec.packagingOk && dec.packaging != null) sug.push({ cls: 'warn', ic: 'P', t: 'Packaging is below one month of demand.', s: `Until it is replenished the finished-goods lead time is ${S.lead_finished_without_packaging} days, not ${S.lead_finished_with_packaging}.` })
@@ -708,12 +929,39 @@
   }
 
   // ---------- settings drawer (admin) ----------
-  function openDrawer() { state.drawer = true; state.newKey = null; render(); if (!DEMO) api('/keys').then((r) => { state.keys = r.keys; render() }).catch(() => {}) }
-  function closeDrawer() { state.drawer = false; render() }
+  function openDrawer() { state.drawer = true; state.newKey = null; if (!DEMO && !state.data && !state.cs && !state.boardSettings) api('/settings').then((r) => { state.boardSettings = r.settings; state.boardMeta = r.meta; render() }).catch(() => {}); if (DEMO && !state.data) state.data = demoData(); render(); if (!DEMO) api('/keys').then((r) => { state.keys = r.keys; render() }).catch(() => {}) }
+  function closeDrawer() { state.drawer = false; state.inboundEdit = null; render() }
+  // Inbound stock editor: status, units, ETA; "received" once it shows in Shopify.
+  function inboundEditor(S) {
+    const list = (state.inboundEdit ||= JSON.parse(JSON.stringify(Array.isArray(S.inbound_stock) ? S.inbound_stock : [])))
+    const msg = h('span', { class: 'msg' })
+    const save = async () => {
+      msg.textContent = 'Saving…'
+      try {
+        if (DEMO) { S.inbound_stock = JSON.parse(JSON.stringify(list)); msg.textContent = 'Saved (demo)'; render(); return }
+        const r = await api('/settings', { method: 'PUT', body: { inbound_stock: list } })
+        msg.textContent = r.errors?.length ? r.errors.join('; ') : 'Saved'
+        state.inboundEdit = null; state.data = null; state.boardSettings = null
+        await load(); state.drawer = true; render()
+      } catch (e) { msg.textContent = e.message }
+    }
+    const row = (x, i) => h('div', { class: 'inrow' },
+      h('select', { onchange: (e) => { x.item = e.target.value } }, [['finished', 'Finished goods'], ['packaging', 'Packaging']].map(([v, l]) => h('option', { value: v, selected: x.item === v, text: l }))),
+      h('input', { type: 'number', min: 0, value: x.units, 'aria-label': 'Units', onchange: (e) => { x.units = Number(e.target.value) } }),
+      h('select', { onchange: (e) => { x.status = e.target.value } }, Object.entries(INBOUND_LABEL).map(([v, l]) => h('option', { value: v, selected: x.status === v, text: v === 'received' ? 'Received (shows in Shopify)' : l }))),
+      h('input', { type: 'date', value: x.eta || '', 'aria-label': 'Expected', onchange: (e) => { x.eta = e.target.value || null } }),
+      h('input', { type: 'text', value: x.note || '', placeholder: 'note', onchange: (e) => { x.note = e.target.value } }),
+      h('button', { class: 'tbtn', text: 'Remove', onclick: () => { list.splice(i, 1); render() } }))
+    return h('div', null,
+      h('h3', { text: 'Inbound stock (pending until it shows in Shopify)' }),
+      h('div', { class: 'inlist' }, list.filter((x) => x.status !== 'received').map((x) => row(x, list.indexOf(x)))),
+      list.some((x) => x.status === 'received') ? h('details', { style: 'font-size:12px;margin-top:6px' }, h('summary', { text: `${list.filter((x) => x.status === 'received').length} received` }), list.filter((x) => x.status === 'received').map((x) => row(x, list.indexOf(x)))) : null,
+      h('div', { class: 'actions' }, h('button', { class: 'btn ghost sm', text: 'Add inbound', onclick: () => { list.push({ id: 'in-' + Date.now(), item: 'finished', units: 0, status: 'ordered', to: 'Zendrop', eta: null, note: '' }); render() } }), h('button', { class: 'btn sm', text: 'Save inbound', onclick: save }), msg))
+  }
   function drawer() {
     if (!state.drawer || state.me.role !== 'admin') return h('div')
-    const S = state.data?.settings || state.cs?.settings || {}
-    const meta = state.data?.settingsMeta || state.cs?.settingsMeta || {}
+    const S = state.data?.settings || state.cs?.settings || state.boardSettings || {}
+    const meta = state.data?.settingsMeta || state.cs?.settingsMeta || state.boardMeta || {}
     const form = {}
     const F = (key, label, help, type = 'number', opts) => {
       let input
@@ -734,12 +982,12 @@
         if (DEMO) { Object.assign(S, patch); msg.textContent = 'Saved (demo, not persisted)'; render(); return }
         const r = await api('/settings', { method: 'PUT', body: patch })
         msg.textContent = r.errors?.length ? 'Saved with notes: ' + r.errors.join('; ') : 'Saved'
-        if (state.view === 'cs') { state.data = null; await loadCs() } else { state.cs = null; await load() }
+        if (state.view === 'cs') { state.data = null; await loadCs() } else if (state.view === 'board') { const r = await api('/settings'); state.boardSettings = r.settings; state.boardMeta = r.meta; await loadBoard(true) } else { state.cs = null; await load() }
         state.drawer = true; render()
       } catch (e) { msg.textContent = e.message }
     }
     const keyName = h('input', { type: 'text', placeholder: 'Who is this key for? e.g. Calvin' })
-    const keyRole = h('select', null, h('option', { value: 'viewer', text: 'Viewer' }), h('option', { value: 'admin', text: 'Admin (can edit inputs and keys)' }))
+    const keyRole = h('select', null, h('option', { value: 'viewer', text: 'Viewer (all tabs, no settings)' }), h('option', { value: 'support', text: 'Customer support (Support board + Refund matrix only)' }), h('option', { value: 'admin', text: 'Admin (can edit inputs and keys)' }))
     const issue = async () => {
       try {
         const r = DEMO ? { key: 'inn_demo0000-demo0000-demo0000-demo0000', name: keyName.value } : await api('/keys', { method: 'POST', body: { name: keyName.value, role: keyRole.value } })
@@ -760,6 +1008,7 @@
         F('finished_on_hand', 'Finished goods on hand (manual)', 'units counted; only used when source is manual'),
         F('packaging_on_hand', 'Packaging on hand', 'units of packaging ready for the manufacturer'),
         F('packaging_per_unit', 'Packaging per finished unit', 'usually 1')),
+      inboundEditor(S),
       h('h3', { text: 'Lead times (days)' }),
       h('div', { class: 'form' },
         F('lead_finished_with_packaging', 'Finished goods, packaging on hand', 'Calvin: "they only need like 10 days"'),
@@ -783,14 +1032,20 @@
         F('dispute_rate_pct', 'Dispute rate (%)', 'from Shopify Payments; 0.9% on 12 Oct'),
         F('dispute_threshold_pct', 'Hold threshold (%)', 'processor hold at 1%'),
         F('dispute_rate_at', 'Dispute rate as of', 'date you read the rate', 'date')),
+      h('h3', { text: 'Support board' }),
+      h('div', { class: 'form' },
+        F('cs_ship_eta_text', 'Ship date for unshipped orders', 'e.g. Friday 31 October. Blank = drafts ask the agent to confirm with Calvin', 'text'),
+        F('cs_discount_code', 'Discount code in replies', 'handover: WELCOME15', 'text'),
+        F('cs_minutes_per_ticket', 'Minutes per ticket', 'used for hours-saved estimates'),
+        F('cs_autodraft_signature', 'Auto-draft sign-off', 'name on drafts the system writes', 'text')),
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Save inputs', onclick: save }), msg),
       h('h3', { text: 'Access keys' }),
-      h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 8px', text: 'One key per person. Revoking a key signs that person out everywhere. The admin key from Vercel (INNADERM_ADMIN_KEY) is listed once it has been used.' }),
+      h('p', { class: 'muted', style: 'font-size:12.5px;margin:0 0 8px', text: 'One key per person. Revoking a key signs that person out everywhere. The admin key from Vercel (INNADERM_ADMIN_KEY) is listed under your name once it has been used.' }),
       h('div', { class: 'form' }, h('div', { class: 'field' }, h('label', { text: 'Name' }), keyName), h('div', { class: 'field' }, h('label', { text: 'Role' }), keyRole)),
       h('div', { class: 'actions' }, h('button', { class: 'btn', text: 'Issue key', onclick: issue })),
       state.newKey ? h('div', { class: 'newkey' }, `New key for ${state.newKey.name}. Copy it now; it is not shown again.`, h('code', { text: state.newKey.key }), h('button', { class: 'btn sm ghost', text: 'Copy', onclick: () => navigator.clipboard?.writeText(state.newKey.key) })) : null,
       h('div', { style: 'margin-top:12px' }, (state.keys || []).map((k) => h('div', { class: 'keyrow' },
-        h('div', null, h('b', { text: k.name }), k.you ? ' (you)' : '', h('div', { class: 'm', text: `${k.role} · created ${fmtDate(k.createdAt)}${k.lastUsedAt ? ' · last used ' + fmtDate(k.lastUsedAt) : ' · never used'}${k.revokedAt ? ' · REVOKED ' + fmtDate(k.revokedAt) : ''}` })),
+        h('div', null, h('b', { text: k.name }), k.you ? ' (you)' : '', h('div', { class: 'm', text: `${roleLabel(k.role)} · created ${fmtDate(k.createdAt)}${k.lastUsedAt ? ' · last used ' + fmtDate(k.lastUsedAt) : ' · never used'}${k.revokedAt ? ' · REVOKED ' + fmtDate(k.revokedAt) : ''}` })),
         !k.revokedAt && !k.you ? h('button', { class: 'btn sm danger', text: 'Revoke', onclick: () => revoke(k) }) : h('span')))),
       h('h3', { text: 'Sources' }),
       h('p', { class: 'muted', style: 'font-size:12.5px', text: `Shopify store: ${state.data?.integrations.shopify.store}. Zendrop sheet id: ${S.zendrop_sheet_id}. ClickUp lists: ${(S.clickup_lists || []).map((l) => l.name).join(', ')}. Change these in Vercel env / the settings API.` }))
@@ -1027,6 +1282,597 @@
     }
   }
 
+  // ---------- Support board (work the Innaderm inbox, like the Serentia board) ----------
+  const LS_SIGNER = 'innaderm.signer'
+  const QUEUES = [
+    ['reply', 'Needs reply', (t) => t.needsReply && t.status !== 'With Calvin'],
+    ['back', 'They replied', (t) => t.needsReply && (t.reopened || (t.msgsOut > 0 && t.statusSet))],
+    ['calvin', 'With Calvin', (t) => t.status === 'With Calvin'],
+    ['drafted', 'Drafted', (t) => t.status === 'Drafted'],
+    ['waiting', 'Waiting on customer', (t) => !t.needsReply && ['Replied', 'Waiting on customer', 'With Zendrop'].includes(t.status)],
+    ['open', 'All open', (t) => t.needsReply || !['Done', 'Skip'].includes(t.status)],
+    ['done', 'Done', (t) => ['Done', 'Skip'].includes(t.status) && !t.reopened],
+  ]
+  const STATUS_CLS = { New: '', Drafted: 'warn', Replied: 'good', 'Waiting on customer': '', 'With Calvin': 'bad', 'With Zendrop': 'warn', Done: 'good', Skip: '' }
+  const PLACEHOLDER_RE = /\[[A-Z][A-Z0-9 ,.:;'’()/&+-]{2,}\]/g
+
+  function signer() {
+    const saved = safeGet(LS_SIGNER)
+    if (saved) return saved
+    const n = String(state.me?.name || '').replace(/\(.*\)/, '').trim()
+    return /^admin$/i.test(n) ? '' : n.split(/\s+/)[0] || ''
+  }
+  const fillTpl = (body, vars) => String(body).replace(/\{(\w+)\}/g, (m, k) => (vars[k] != null && vars[k] !== '' ? vars[k] : m))
+
+  async function loadBoard(quiet) {
+    if (DEMO) { state.board = demoBoard(); render(); return }
+    if (!quiet) { state.boardLoading = true; state.boardError = null; render() }
+    try { state.board = await api('/cs/board') } catch (e) { state.boardError = e.message }
+    state.boardLoading = false; render()
+  }
+  // Refresh in the background unless someone is mid-edit.
+  setInterval(() => {
+    if (state.view !== 'board' || !state.me || document.hidden || DEMO) return
+    const a = document.activeElement
+    if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return
+    loadBoard(true)
+  }, 120e3)
+
+  async function saveTicket(t, patch) {
+    Object.assign(t, patch.status ? { status: patch.status, statusSet: true, reopened: false, needsReply: ['Done', 'Skip', 'Replied', 'Waiting on customer'].includes(patch.status) ? false : t.needsReply } : {}, patch.note !== undefined ? { note: patch.note } : {}, patch.category ? { category: patch.category } : {})
+    render()
+    if (DEMO) return
+    try { await api('/cs/board', { method: 'POST', body: { id: t.id, ...patch } }) } catch (e) { alert('Not saved: ' + e.message); loadBoard(true) }
+  }
+
+  function boardView() {
+    const wrap = h('div', { class: 'wrap board' + (state.boardLoading && state.board ? ' fade' : '') })
+    if (state.boardError) wrap.append(h('div', { class: 'banner bad' }, `Could not load: ${state.boardError}`, h('button', { class: 'btn sm ghost', text: 'Retry', onclick: () => loadBoard() })))
+    const b = state.board
+    if (!b) { if (!state.boardError) wrap.append(h('div', { class: 'banner info', text: 'Loading the support board…' })); return wrap }
+    const sub = state.boardSub || 'tickets'
+    wrap.append(h('div', { class: 'board-head' },
+      h('div', { class: 'seg', role: 'tablist' }, [['tickets', 'Tickets'], ['auto', 'Automations'], ['templates', 'Templates']].map(([k, l]) => h('button', { 'aria-pressed': String(sub === k), text: l, onclick: () => { state.boardSub = k; render() } }))),
+      h('label', { class: 'signer' }, 'Signing as ', h('input', { value: signer(), placeholder: 'your name', 'aria-label': 'Your sign-off name', onchange: (e) => { safeSet(LS_SIGNER, e.target.value.trim() || null); render() } }))))
+    if (!b.sync?.lastIngestAt && !DEMO) wrap.append(h('div', { class: 'banner bad', text: 'No Gmail data yet. Check the Apps Script in the support inbox is running.' }))
+    if (b.sync?.lastIngestAt && !b.draftScript && !DEMO) wrap.append(h('div', { class: 'banner', text: 'The Gmail script has not picked up drafts yet. Paste the updated script into script.google.com and run "upgrade" once, then "Put in Gmail" works.' }))
+    else if (b.draftScript && !(b.draftScript.version >= 2) && !DEMO && state.me?.role === 'admin') wrap.append(h('div', { class: 'banner', text: '"Send reply" needs the latest Gmail script. Paste the updated script into script.google.com and run "upgrade" once. Until then, replies queued with Send reply wait and drafts keep working.' }))
+    if (sub === 'auto') wrap.append(automationView(b))
+    else if (sub === 'templates') wrap.append(templatesView(b))
+    else wrap.append(ticketsView(b))
+    return wrap
+  }
+
+  function ticketsView(b) {
+    const qKey = state.boardQueue || 'reply'
+    const counts = Object.fromEntries(QUEUES.map(([k, , f]) => [k, b.tickets.filter(f).length]))
+    const calvinNew = b.tickets.filter((t) => t.status === 'With Calvin' && t.clickup?.calvinReplied).length
+    const frag = h('div')
+    frag.append(h('div', { class: 'queues' }, QUEUES.map(([k, l]) => h('button', { class: 'q' + (k === qKey ? ' on' : ''), onclick: () => { state.boardQueue = k; state.openTicket = null; render() } },
+      l, h('b', { text: fmtInt(counts[k]) }), k === 'calvin' && calvinNew ? h('span', { class: 'tag good', text: `${calvinNew} answered` }) : null)),
+      h('input', { class: 'search', type: 'search', placeholder: 'Search name, email, subject, #INN…', value: state.boardSearch || '', oninput: (e) => { state.boardSearch = e.target.value; clearTimeout(state._st); state._st = setTimeout(() => { render(); const el = $('.board .search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) } }, 250) } })))
+    const f = QUEUES.find(([k]) => k === qKey)[2]
+    const needle = (state.boardSearch || '').trim().toLowerCase()
+    let list = b.tickets.filter(f)
+    if (needle) list = b.tickets.filter((t) => [t.customerName, t.customerEmail, t.subject, t.lastExcerpt, ...(t.orderNumbers || []), ...(t.orders || []).map((o) => o.name)].join(' ').toLowerCase().includes(needle))
+    const risk = (t) => (t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') ? 1 : 0)
+    // Sort by the customer's latest message (default: longest waiting first) or
+    // by when they first wrote. Risky tickets lead only in the default order.
+    const sortKey = state.boardSort || 'waiting'
+    const ts = (t, k) => new Date(k === 'first' || k === 'first_new' ? t.firstIn : t.lastIn).getTime()
+    const SORTS = { waiting: (a, c) => (risk(c) - risk(a)) || (ts(a) - ts(c)), newest: (a, c) => ts(c) - ts(a), oldest: (a, c) => ts(a) - ts(c), first: (a, c) => ts(a, 'first') - ts(c, 'first'), first_new: (a, c) => ts(c, 'first') - ts(a, 'first') }
+    list.sort(SORTS[sortKey] || SORTS.waiting)
+    const grouped = state.boardGroup !== false
+    frag.append(h('div', { class: 'sortbar' },
+      h('label', null, 'Sort ', h('select', { onchange: (e) => { state.boardSort = e.target.value; render() } },
+        [['waiting', 'Waiting longest (risky first)'], ['newest', 'Latest message: newest first'], ['oldest', 'Latest message: oldest first'], ['first_new', 'First contact: newest first'], ['first', 'First contact: oldest first']]
+          .map(([v, l]) => h('option', { value: v, selected: v === sortKey, text: l })))),
+      h('label', null, h('input', { type: 'checkbox', checked: grouped, onchange: (e) => { state.boardGroup = e.target.checked; render() } }), ' Group by type')))
+    if (!list.length) { frag.append(h('div', { class: 'card empty', text: needle ? 'Nothing matches that search.' : qKey === 'reply' ? 'Inbox zero. Nobody is waiting on us.' : 'Nothing here.' })); return frag }
+    if (!grouped) { frag.append(h('div', { class: 'tlist', style: 'margin-top:12px' }, list.map((t) => ticketRow(t, b)))); return frag }
+    const groups = new Map()
+    for (const t of list) { if (!groups.has(t.category)) groups.set(t.category, []); groups.get(t.category).push(t) }
+    const stageOf = Object.fromEntries((b.automation || []).map((a) => [a.category, a]))
+    // Groups holding a dispute, legal or reaction ticket first, then the biggest.
+    const ordered = sortKey === 'waiting'
+      ? [...groups.entries()].sort((a, c) => (Math.max(...c[1].map(risk)) - Math.max(...a[1].map(risk))) || (c[1].length - a[1].length))
+      : [...groups.entries()] // already in the chosen order of each group's first ticket
+    for (const [cat, items] of ordered) {
+      const st = stageOf[cat]
+      const stage = b.stages.find((s) => s.key === st?.stage)
+      frag.append(h('section', { class: 'tgroup' },
+        h('div', { class: 'tg-head' }, h('h3', { text: cat }), h('span', { class: 'n', text: fmtInt(items.length) }), stage && stage.key !== 'manual' ? tag(stage.label, 'good') : null),
+        h('div', { class: 'tlist' }, items.map((t) => ticketRow(t, b)))))
+    }
+    return frag
+  }
+
+  function slaChip(t) {
+    if (t.waitingHours == null) return h('span', { class: 'sla done', title: t.lastOut ? 'We replied ' + agoTxt(t.lastOut) : '', text: t.lastOut ? '✓ ' + agoTxt(t.lastOut).replace(' ago', '') : '' })
+    const hrs = t.waitingHours
+    const urgent = t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') || t.vip
+    const cls = hrs > 24 || (urgent && hrs > 4) ? 'bad' : hrs > 6 || (urgent && hrs > 2) ? 'warn' : 'ok'
+    return h('span', { class: 'sla ' + cls, title: 'Time since the customer last wrote', text: hrsTxt(hrs) })
+  }
+  // "Mon 26 Oct, 14:32" in the viewer's own time zone.
+  const fmtStamp = (d) => (d ? new Date(d).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–')
+  const agoTxt = (d) => { const hrs = (Date.now() - new Date(d)) / 3600e3; return hrs < 1 ? Math.max(1, Math.round(hrs * 60)) + 'm ago' : hrs < 48 ? Math.round(hrs) + 'h ago' : Math.round(hrs / 24) + 'd ago' }
+
+  function ticketRow(t, b) {
+    const open = state.openTicket === t.id
+    const lastDraft = t.drafts[0]
+    const row = h('div', { class: 'trow' + (open ? ' open' : '') + (t.reopened ? ' back' : '') })
+    row.append(h('button', { class: 'tsum', 'aria-expanded': String(open), onclick: () => { state.openTicket = open ? null : t.id; render() } },
+      slaChip(t),
+      h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown', title: t.customerEmail || '' }), t.vip ? tag('VIP', 'warn') : null),
+      h('span', { class: 'subj' }, h('span', { class: 's', text: t.subject }), h('span', { class: 'when', title: `First contact ${fmtStamp(t.firstIn)}`, text: fmtStamp(t.lastIn) })),
+      h('span', { class: 'tags' },
+        t.reopened ? tag('Replied again', 'bad') : null,
+        t.flags.map((x) => tag(FLAG_LABEL[x] || x, 'bad')),
+        t.orders?.[0] ? tag(t.orders[0].name) : null,
+        lastDraft && lastDraft.action === 'send' && ['pending', 'claimed'].includes(lastDraft.status) ? tag('Sending…', 'warn') : lastDraft && lastDraft.action === 'send' && lastDraft.status === 'sent' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag('Reply sent', 'good') : lastDraft && ['pending', 'claimed'].includes(lastDraft.status) ? tag('Draft → Gmail…', 'warn') : lastDraft && lastDraft.status === 'created' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag(lastDraft.source === 'auto' ? 'Auto-draft in Gmail' : 'Draft in Gmail', 'good') : null,
+        t.clickup ? tag(t.clickup.calvinReplied ? 'Calvin answered' : 'With Calvin', t.clickup.calvinReplied ? 'good' : 'bad') : null),
+      h('span', { class: 'st tag ' + (STATUS_CLS[t.status] || ''), text: t.status })))
+    if (open) row.append(ticketDetail(t, b))
+    return row
+  }
+
+  function ticketDetail(t, b) {
+    const box = h('div', { class: 'tdetail' })
+    // Left: what the customer said and who they are
+    const left = h('div', { class: 'tleft' })
+    left.append(h('div', { class: 'meta' },
+      h('a', { href: t.link, target: '_blank', rel: 'noopener', class: 'btn sm ghost', text: 'Open thread in Gmail' }),
+      t.customerLink ? h('a', { href: t.customerLink, target: '_blank', rel: 'noopener', class: 'btn sm ghost', text: 'All their emails' }) : null,
+      h('span', { class: 'muted', text: `${t.customerEmail || ''} · first wrote ${fmtStamp(t.firstIn)} · ${t.msgsIn} from them, ${t.msgsOut} from us` })))
+    left.append(h('div', { class: 'msg' }, h('div', { class: 'lbl', text: `Their latest message · ${fmtStamp(t.lastIn)} (${agoTxt(t.lastIn)})` }), h('p', { text: t.lastExcerpt || t.excerpt || '(message text arrives with the updated Gmail script)' })))
+    if (t.excerpt && t.lastExcerpt && !t.lastExcerpt.startsWith(t.excerpt.slice(0, 60))) left.append(h('details', { class: 'msg first' }, h('summary', { text: 'First message' }), h('p', { text: t.excerpt })))
+    left.append(h('div', { class: 'lbl', style: 'margin-top:12px', text: t.orders?.length ? `Orders${t.spent ? ` · $${Math.round(t.spent)} spent` : ''}${t.vip ? ' · VIP (2+ orders or $100+)' : ''}` : 'Orders' }))
+    left.append(t.orders?.length ? h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, ['Order', 'Placed', 'Payment', 'Fulfilment', 'Tracking', 'Total'].map((x, i) => h('th', { class: i > 4 ? 'num' : '', text: x })))),
+      h('tbody', null, t.orders.map((o) => h('tr', null,
+        h('td', null, h('b', { text: o.name }), o.subscription ? ' ' : null, o.subscription ? tag('Sub') : null),
+        h('td', { text: fmtDate(o.createdAt) }),
+        h('td', { text: o.cancelledAt ? 'Cancelled' : (o.financial || '').replace(/_/g, ' ').toLowerCase() }),
+        h('td', { text: o.deliveredAt ? `Delivered ${fmtDate(o.deliveredAt)}` : o.fulfilledAt ? `Shipped ${fmtDate(o.fulfilledAt)}` : (o.status || 'unfulfilled').replace(/_/g, ' ').toLowerCase() }),
+        h('td', null, o.trackingNumber ? h('a', { href: o.trackingUrl || `https://t.17track.net/en#nums=${encodeURIComponent(o.trackingNumber)}`, target: '_blank', rel: 'noopener', text: `${o.carrier ? o.carrier + ' ' : ''}${o.trackingNumber}` }) : '–'),
+        h('td', { class: 'num', text: '$' + o.total.toFixed(2) })))))) : h('p', { class: 'muted', style: 'margin:4px 0', text: b.shopifyReady ? 'No order found for this email or order number. Ask for their #INN number.' : 'Shopify not connected yet: order details appear once the Shopify keys are in.' }))
+    // Working state
+    left.append(h('div', { class: 'work' },
+      h('label', null, 'Status ', h('select', { onchange: (e) => saveTicket(t, { status: e.target.value }) }, b.statuses.map((s) => h('option', { value: s, selected: s === t.status, text: s })))),
+      h('label', null, 'Type ', h('select', { onchange: (e) => saveTicket(t, { category: e.target.value === t.autoCategory ? '' : e.target.value }) }, Object.keys(b.defaults).map((c) => h('option', { value: c, selected: c === t.category, text: c })))),
+      h('textarea', { class: 'note', rows: 2, placeholder: 'Internal note (not sent to the customer)', onchange: (e) => saveTicket(t, { note: e.target.value }) }, t.note || '')))
+    if (t.statusBy) left.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:4px', text: `Last change by ${t.statusBy} ${agoTxt(t.statusAt)}` }))
+    const ra = window.InnRefund ? window.InnRefund.assess(t) : null
+    if (ra) left.append(refundBox(t, ra))
+    left.append(calvinBox(t, b, ra))
+    box.append(left, composer(t, b, ra))
+    return box
+  }
+
+  function composer(t, b, ra) {
+    state.compose = state.compose || {}
+    const c = state.compose[t.id] || (state.compose[t.id] = { template: b.defaults[t.category] || 'general', text: null })
+    const tpl = b.templates.find((x) => x.key === c.template) || b.templates[0]
+    const me = signer()
+    const vars = { ...t.vars, agent: me || '[YOUR NAME]' }
+    if (c.text == null) c.text = fillTpl(tpl?.body || '', vars)
+    const ta = h('textarea', { class: 'reply', rows: 14, spellcheck: 'true', oninput: (e) => { c.text = e.target.value; warn() } }, c.text)
+    const warnBox = h('div', { class: 'warns' })
+    const reply = h('button', { class: 'btn', text: 'Send reply', title: 'Sends this reply to the customer from support@innaderm.com within about a minute' })
+    const send = h('button', { class: 'btn ghost', text: 'Put in Gmail as draft' })
+    const msg = h('span', { class: 'msg' })
+    function warn() {
+      const ph = [...new Set(c.text.match(PLACEHOLDER_RE) || [])]
+      const br = [...new Set(c.text.match(/\{\w+\}/g) || [])]
+      warnBox.replaceChildren(...[...ph, ...br].map((p) => tag('Replace ' + p, 'bad')))
+      send.disabled = reply.disabled = !!(ph.length || br.length) || !c.text.trim() || !me
+    }
+    warn()
+    const queue = async (action) => {
+      if (action === 'send') {
+        const to = t.customerName ? `${t.customerName} <${t.customerEmail || ''}>` : t.customerEmail || 'the customer'
+        if (!confirm(`Send this reply to ${to} now?\n\nIt goes out from the support inbox within about a minute, in the same email thread.${tpl?.checklist ? '\n\nBefore sending: ' + tpl.checklist : ''}`)) return
+      }
+      send.disabled = reply.disabled = true; msg.textContent = 'Queuing…'
+      try {
+        const r = DEMO ? { id: Date.now() } : await api('/cs/board/draft', { method: 'POST', body: { id: t.id, body: c.text, template: c.template, category: t.category, action } })
+        t.drafts.unshift({ id: r.id, action, status: 'pending', source: 'agent', at: new Date().toISOString(), by: state.me.name })
+        if (action === 'draft') { t.status = 'Drafted'; t.statusSet = true }
+        if (action === 'send' && b.draftScript && !(b.draftScript.version >= 2)) msg.textContent = 'Queued, but the Gmail script needs updating before it can send: paste the new script and run "upgrade".'
+        else msg.textContent = action === 'send' ? 'Sending. It goes out within about a minute; you can cancel below until then.' : 'Queued. It appears as a draft in the Gmail thread within a minute or two; check it there and press Send.'
+        setTimeout(render, 2500)
+      } catch (e) { msg.textContent = e.message; warn() }
+    }
+    reply.onclick = () => queue('send')
+    send.onclick = () => queue('draft')
+    const copy = h('button', { class: 'btn ghost', text: 'Copy', onclick: async () => { try { await navigator.clipboard.writeText(c.text); msg.textContent = 'Copied.' } catch { ta.select(); msg.textContent = 'Press Ctrl+C to copy.' } } })
+    const pick = h('select', { 'aria-label': 'Template', onchange: (e) => { c.template = e.target.value; c.text = null; render() } },
+      b.templates.map((x) => h('option', { value: x.key, selected: x.key === c.template, text: `${x.title}${x.approved ? '' : ' (not approved)'}` })))
+    const reset = h('button', { class: 'tbtn', text: 'Reset', title: 'Refill from the template', onclick: () => { c.text = null; render() } })
+    const useMatrix = ra && ra.reply ? h('button', { class: 'tbtn', text: `Use ${ra.row} reply`, title: 'Fill in the refund-matrix reply for this ticket', onclick: () => { c.text = ra.reply.replace(/\{agent\}/g, me || '[YOUR NAME]'); render() } }) : null
+    const box = h('div', { class: 'tright' },
+      h('div', { class: 'lbl' }, 'Reply ', pick, ' ', reset, useMatrix ? ' ' : null, useMatrix),
+      tpl?.checklist ? h('div', { class: 'check' }, h('b', { text: 'Before sending: ' }), tpl.checklist) : null,
+      !me ? h('div', { class: 'banner', style: 'margin:6px 0', text: 'Set your sign-off name in "Signing as" above.' }) : null,
+      ta, warnBox,
+      h('div', { class: 'actions' }, reply, send, copy, msg))
+    const drafts = t.drafts.slice(0, 3)
+    const STATE = { created: 'in Gmail drafts', sent: 'sent to the customer', pending: 'waiting for the Gmail script', claimed: 'being processed by Gmail', failed: 'failed', cancelled: 'cancelled', replaced: 'replaced by a newer one' }
+    const cancel = async (d) => {
+      try { if (!DEMO) await api('/cs/board/draft', { method: 'POST', body: { id: t.id, cancel: d.id } }); d.status = 'cancelled'; render() } catch (e) { alert(e.message); loadBoard(true) }
+    }
+    if (drafts.length) box.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:6px' }, drafts.map((d) => h('div', null,
+      `${d.source === 'auto' ? 'Auto-draft' : (d.action === 'send' ? 'Reply by ' : 'Draft by ') + (d.by || '?')} · ${fmtStamp(d.at)}: ${STATE[d.status] || d.status}${d.error ? ' (' + d.error + ')' : ''}`,
+      d.status === 'pending' && d.id ? h('button', { class: 'tbtn', style: 'margin-left:6px', text: d.action === 'send' ? 'Cancel send' : 'Cancel', onclick: () => cancel(d) }) : null))))
+    return box
+  }
+
+  function calvinBox(t, b, ra) {
+    const box = h('div', { class: 'calvin' })
+    if (t.clickup) {
+      box.append(h('div', { class: 'lbl' }, 'With Calvin in ClickUp ', h('a', { href: t.clickup.url, target: '_blank', rel: 'noopener', text: 'Open task' }), t.clickup.status ? ` · ${t.clickup.status}` : ''))
+      if (t.clickup.error) box.append(h('p', { class: 'muted', text: 'Could not read the task: ' + t.clickup.error }))
+      for (const cm of t.clickup.comments || []) box.append(h('div', { class: 'cmt' + (cm.fromCalvin ? ' calvin' : '') }, h('b', { text: cm.by + ' ' }), h('span', { class: 'muted', text: agoTxt(cm.at) }), h('p', { text: cm.text })))
+      if (!(t.clickup.comments || []).length) box.append(h('p', { class: 'muted', style: 'margin:4px 0', text: 'No reply from Calvin yet.' }))
+      return box
+    }
+    if (!state.escalating || state.escalating !== t.id) {
+      box.append(h('button', { class: 'btn ghost sm', text: 'Send to Calvin', title: b.clickupReady ? 'Creates a task in ClickUp Founder Escalations' : 'Needs INNADERM_CLICKUP_TOKEN in Vercel', disabled: !b.clickupReady && !DEMO, onclick: () => { state.escalating = t.id; render() } }),
+        b.clickupReady || DEMO ? h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Refunds, pausing subscriptions in Loop, anything you are unsure of.' }) : h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Add INNADERM_CLICKUP_TOKEN in Vercel to turn this on.' }))
+      return box
+    }
+    const preReason = ra?.escalate ? (ra.row === 'R7' ? 'Adverse reaction' : ['R12', 'R13'].includes(ra.row) ? 'Chargeback or dispute' : ['R3', 'R4', 'R5'].includes(ra.row) ? 'Replacement / reship' : 'Refund approval') : null
+    const reason = h('select', null, ['Refund approval', 'Pause or cancel subscription (Loop)', 'Replacement / reship', 'Adverse reaction', 'Chargeback or dispute', 'Not sure how to answer', 'Other'].map((r) => h('option', { value: r, text: r, selected: preReason ? r === preReason : (r === 'Adverse reaction' && t.flags.includes('reaction')) || (r === 'Chargeback or dispute' && t.flags.includes('chargeback')) })))
+    const question = h('textarea', { rows: 3, placeholder: 'What do you need Calvin to decide or do? e.g. "Approve a refund of the 1-pack ($59.99)?" or "Please pause her subscription in Loop."' }, ra?.escalate ? `Refund matrix ${ra.row} (${ra.def.title}). ${ra.escalate}. Recommended: ${ra.decision}${ra.order ? ` Order ${ra.order.name}, $${ra.order.total.toFixed(2)} incl. shipping.` : ''}` : '')
+    const position = h('input', { type: 'text', placeholder: 'What the customer wants (optional)' })
+    const msg = h('span', { class: 'msg' })
+    const go = h('button', { class: 'btn sm', text: 'Create ClickUp task for Calvin', onclick: async () => {
+      go.disabled = true; msg.textContent = 'Creating…'
+      try {
+        const r = DEMO ? { task: { id: 'demo', url: 'https://app.clickup.com' } } : await api('/cs/board/escalate', { method: 'POST', body: { id: t.id, reason: reason.value, question: question.value, customerPosition: position.value } })
+        t.clickup = { id: r.task.id, url: r.task.url, status: 'new ticket', comments: [] }; t.status = 'With Calvin'; t.statusSet = true
+        state.escalating = null; render()
+      } catch (e) { msg.textContent = e.message; go.disabled = false }
+    } })
+    box.append(h('div', { class: 'esc' }, h('div', { class: 'lbl', text: 'Send to Calvin (ClickUp Founder Escalations)' }), reason, question, position,
+      h('div', { class: 'actions' }, go, h('button', { class: 'btn ghost sm', text: 'Cancel', onclick: () => { state.escalating = null; render() } }), msg)))
+    return box
+  }
+
+  function automationView(b) {
+    const isAdmin = state.me?.role === 'admin'
+    const rows = b.automation || []
+    const saved = rows.reduce((a, r) => a + r.savedHoursPerWeek, 0)
+    const total = rows.reduce((a, r) => a + r.hoursPerWeek, 0)
+    const auto = b.stages.find((s) => s.key === 'autodraft').save
+    const potential = rows.filter((r) => r.potential !== 'never' && r.potential !== 'low').reduce((a, r) => a + Math.max(r.savedHoursPerWeek, r.hoursPerWeek * auto), 0) + rows.filter((r) => r.potential === 'low' || r.potential === 'never').reduce((a, r) => a + r.savedHoursPerWeek, 0)
+    const sec = h('div')
+    sec.append(h('div', { class: 'kpis', style: 'margin-top:4px' },
+      tile('Support hours per week', fmt1(total), 'h', h('div', { class: 'delta' }, h('span', { class: 'muted', text: `tickets × ${b.minutes || 6} min each` })), null),
+      tile('Saved by automation now', fmt1(saved), 'h/wk', h('div', { class: 'delta' }, h('span', { class: saved ? 'up' : 'flat', text: total ? `${Math.round((saved / total) * 100)}% of support time` : '' })), null),
+      tile('If every safe type is auto-drafted', fmt1(potential), 'h/wk', h('div', { class: 'delta' }, h('span', { class: 'muted', text: 'adverse reactions and disputes stay personal' })), null)))
+    sec.append(h('div', { class: 'card', style: 'margin-top:14px' },
+      h('div', { class: 'card-head' }, h('div', null, h('h3', { text: 'Automation ladder' }), h('div', { class: 'hint', text: 'Move each ticket type up one step at a time. A type can only be auto-drafted once its template is approved. Auto-send comes after a Claude reply step.' }))),
+      h('div', { class: 'ladder' }, b.stages.map((s, i) => h('div', { class: 'rung' }, h('b', { text: `${i}. ${s.label}` }), h('span', { text: s.help }), h('span', { class: 'muted', text: `saves about ${Math.round(s.save * 100)}% of handling time` })))),
+      h('div', { style: 'overflow:auto;margin-top:12px' }, h('table', { class: 'dtable auto' },
+        h('thead', null, h('tr', null, ['Ticket type', 'Per week', 'Stage', 'Template', 'Drafts (28 d)', 'Saved now', 'Owner / next step'].map((x) => h('th', { text: x })))),
+        h('tbody', null, rows.map((r) => {
+          const stageSel = isAdmin && r.potential !== 'never'
+            ? h('select', { onchange: async (e) => { const v = e.target.value; try { if (!DEMO) await api('/cs/automation', { method: 'PUT', body: { category: r.category, stage: v } }); r.stage = v; loadBoard(true) } catch (err) { alert(err.message); render() } } },
+              b.stages.map((s) => h('option', { value: s.key, selected: s.key === r.stage, disabled: s.key === 'autosend' || (s.key === 'autodraft' && !r.template?.approved), text: s.label })))
+            : h('span', { text: r.potential === 'never' ? 'Never automate' : b.stages.find((s) => s.key === r.stage)?.label })
+          const owner = isAdmin ? h('input', { value: r.owner || '', placeholder: 'owner', style: 'width:90px', onchange: (e) => DEMO || api('/cs/automation', { method: 'PUT', body: { category: r.category, owner: e.target.value } }) }) : h('span', { text: r.owner || '' })
+          const next = isAdmin ? h('input', { value: r.nextStep || '', placeholder: 'next step', style: 'width:200px', onchange: (e) => DEMO || api('/cs/automation', { method: 'PUT', body: { category: r.category, nextStep: e.target.value } }) }) : h('span', { text: r.nextStep || '' })
+          return h('tr', null,
+            h('td', null, h('b', { text: r.category }), h('div', { class: 'logic', text: r.play })),
+            h('td', { text: fmt1(r.perWeek) }),
+            h('td', null, stageSel, r.stageSince && r.stage !== 'manual' ? h('div', { class: 'logic', text: 'since ' + fmtDate(r.stageSince) }) : null),
+            h('td', null, r.template ? h('span', null, r.template.title, ' ', tag(r.template.approved ? 'Approved' : 'Not approved', r.template.approved ? 'good' : 'warn')) : '–'),
+            h('td', { text: `${fmtInt(r.draftsAgent28)} agent · ${fmtInt(r.draftsAuto28)} auto` }),
+            h('td', { text: r.savedHoursPerWeek ? fmt1(r.savedHoursPerWeek) + ' h/wk' : '–' }),
+            h('td', null, owner, ' ', next))
+        }))))))
+    sec.append(h('p', { class: 'muted', style: 'font-size:12px;margin-top:10px', text: `Hours are estimates: tickets in the last 28 days, ${b.minutes || 6} minutes each (change in Settings), times the share each stage saves. Drafts counts what the team actually put into Gmail from the board, so you can see each step being used.` }))
+    return sec
+  }
+
+  function templatesView(b) {
+    const isAdmin = state.me?.role === 'admin'
+    const sec = h('div')
+    sec.append(h('p', { class: 'muted', style: 'font-size:12.5px', text: 'Templates fill in {first_name}, {order_status} (live from Shopify: shipped, tracking, delivered or not yet shipped), {order_number}, {order_or_ask}, {discount_code} and {agent}. Anything in [CAPITALS IN BRACKETS] must be replaced by the agent; drafts with one left are never put into Gmail. Only approved templates can be auto-drafted.' }))
+    const sample = (b.tickets.find((t) => t.orders?.length) || b.tickets[0])?.vars || { first_name: 'Jamie', order_status: 'Your order #INN17489 shipped on October 20 with USPS.', order_number: '#INN17489', order_or_ask: 'Confirmation that the order is #INN17489', discount_code: b.settings.cs_discount_code }
+    for (const t of b.templates) {
+      const ed = (state.tplEdit ||= {})[t.key] || (state.tplEdit[t.key] = { ...t, categories: [...t.categories] })
+      const msg = h('span', { class: 'msg' })
+      const card = h('div', { class: 'card tpl' })
+      card.append(h('div', { class: 'card-head' }, h('div', null, h('h3', { text: t.title }), h('div', { class: 'hint', text: (t.categories.join(', ') || 'Not the default for any type') + (t.updatedBy ? ` · edited by ${t.updatedBy} ${fmtDate(t.updatedAt)}` : '') })), h('div', { class: 'tools' }, tag(t.approved ? 'Approved' : 'Not approved', t.approved ? 'good' : 'warn'))))
+      if (isAdmin) {
+        card.append(h('div', { class: 'tpl-grid' },
+          h('div', null,
+            h('input', { value: ed.title, oninput: (e) => { ed.title = e.target.value } }),
+            h('textarea', { rows: 10, oninput: (e) => { ed.body = e.target.value } }, ed.body),
+            h('input', { value: ed.checklist || '', placeholder: 'Before-sending check shown to the agent', oninput: (e) => { ed.checklist = e.target.value } }),
+            h('div', { class: 'cats' }, Object.keys(b.defaults).map((c) => h('label', null, h('input', { type: 'checkbox', checked: ed.categories.includes(c), onchange: (e) => { ed.categories = e.target.checked ? [...ed.categories, c] : ed.categories.filter((x) => x !== c) } }), c))),
+            h('label', { class: 'appr' }, h('input', { type: 'checkbox', checked: ed.approved, onchange: (e) => { ed.approved = e.target.checked } }), ' Approved (safe to send after a quick check; allows auto-drafts)'),
+            h('div', { class: 'actions' }, h('button', { class: 'btn sm', text: 'Save template', onclick: async () => { msg.textContent = 'Saving…'; try { if (!DEMO) await api('/cs/templates', { method: 'PUT', body: ed }); Object.assign(t, ed); msg.textContent = 'Saved'; loadBoard(true) } catch (e) { msg.textContent = e.message } } }), msg)),
+          h('div', { class: 'preview' }, h('div', { class: 'lbl', text: 'Preview with a real ticket' }), h('pre', { text: fillTpl(ed.body, { ...sample, agent: signer() || 'Kashif' }) }))))
+      } else card.append(h('pre', { class: 'preview', text: fillTpl(t.body, { ...sample, agent: signer() || 'Kashif' }) }))
+      sec.append(card)
+    }
+    return sec
+  }
+
+  // ---------- Serentia stock (/api/serentia/stock) ----------
+  async function loadSerentia() {
+    if (DEMO) { state.ser = demoSerentia(); render(); return }
+    state.serLoading = true; state.serError = null; render()
+    try { state.ser = await api('/api/serentia/stock') } catch (e) { state.serError = e.message }
+    state.serLoading = false; render()
+  }
+  const SER_STATUS = { out: ['Out of stock', 'bad'], reorder: ['Reorder now', 'bad'], soon: ['Reorder soon', 'warn'], ok: ['OK', 'good'], unknown: ['No sales rate', ''] }
+  const dayTxt = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '–')
+
+  function serentiaView() {
+    const wrap = h('div', { class: 'wrap ser' + (state.serLoading && state.ser ? ' fade' : '') })
+    if (state.serError) wrap.append(h('div', { class: 'banner bad' }, `Could not load: ${state.serError}`, h('button', { class: 'btn sm ghost', text: 'Retry', onclick: loadSerentia })))
+    const d = state.ser
+    if (!d) { if (!state.serError) wrap.append(h('div', { class: 'banner info', text: 'Loading Serentia stock…' })); return wrap }
+    const src = d.sources
+    if (src.zendrop.error) wrap.append(h('div', { class: 'banner bad', text: `Zendrop sheet: ${src.zendrop.error}${src.zendrop.stale ? ' (showing the last copy)' : ''}` }))
+    const man = src.manual
+    if (!src.shopify.configured && !man) wrap.append(h('div', { class: 'banner' }, h('b', { text: 'No sales yet. ' }), 'Upload a Shopify sales report in the box below the table, or add the Serentia Shopify keys in Vercel for live sales.'))
+    else if (!src.shopify.configured && man) wrap.append(h('div', { class: 'banner info' }, h('b', { text: 'Sales from a pasted Shopify report' }), ` · ${man.period || `last ${man.days} days`} · saved ${agoTxt(man.savedAt)} by ${man.by || '?'}${man.shadeLevel ? '' : ' · totals only: upload the report split by variant for per-shade dates'}`))
+    else if (src.shopify.error) wrap.append(h('div', { class: 'banner bad', text: `Serentia Shopify: ${src.shopify.error}` }))
+    const t = d.totals || {}
+    const S = d.shades || []
+    const out = S.filter((x) => x.status === 'out'), now = S.filter((x) => x.status === 'reorder'), soon = S.filter((x) => x.status === 'soon')
+    wrap.append(h('div', { class: 'kpis', style: 'margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(165px,1fr))' },
+      tile('Units at Zendrop', fmtInt(t.onHand), null, h('div', { class: 'delta' }, h('span', { class: 'muted', text: d.updated ? `Zendrop updated ${dayTxt(d.updated)}` : '' })), null),
+      tile('Selling per day', t.rate == null ? '–' : fmtInt(t.rate), t.rate == null ? '' : 'units', h('div', { class: 'delta' }, h('span', { class: 'muted', text: src.shopify.configured && !src.shopify.error ? `Shopify, last ${d.settings.baselineDays} days` : man ? `report, ${man.days} days${t.rate ? ` · ~${fmtInt(t.onHand / t.rate)} days of total stock` : ''}` : 'needs sales' })), null),
+      tile('Subscriber renewals', t.renew30 == null ? '–' : fmtInt(t.renew30), t.renew30 == null ? '' : 'units / 30d', h('div', { class: 'delta' }, h('span', { class: src.loop?.error ? 'down' : 'muted', text: src.loop?.error ? 'Loop error' : src.loop?.manual ? `${fmtInt(t.subscriptions)} subscriptions · ${src.loop.snapshot ? 'Loop snapshot ' + fmtDayY(src.loop.savedAt) : 'pasted ' + agoTxt(src.loop.savedAt)}` : src.loop?.configured ? `${fmtInt(t.subscriptions)} subscriptions renewing` : 'paste Loop rows below' })), null),
+      tile(`Needed to ${d.demand?.through ? new Date(d.demand.through + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '31 Dec'}`, t.needThrough == null ? '–' : fmtInt(t.needThrough), t.needThrough == null ? '' : 'units', h('div', { class: 'delta' }, h('span', { class: t.shortThrough ? 'down' : 'muted', text: t.needThrough == null ? 'needs sales per shade' : t.shortThrough ? `short ${fmtInt(t.shortThrough)} across shades` : 'covered by stock on hand' })), null),
+      tile('Out of stock', fmtInt(out.length), out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: out.length ? 'down' : 'flat', text: out.map((x) => x.variant + (x.oversold ? ` (−${fmtInt(x.oversold)})` : '')).join(', ') || 'none' })), null),
+      tile('Reorder now', fmtInt(now.length + out.length), now.length + out.length === 1 ? 'shade' : 'shades', h('div', { class: 'delta' }, h('span', { class: now.length ? 'down' : 'flat', text: [...out, ...now].map((x) => x.variant).join(', ') || (soon.length ? `${soon.length} soon` : 'none') })), null),
+      tile('Suggested order', t.suggest ? fmtInt(t.suggest) : '0', 'units', h('div', { class: 'delta' }, h('span', { class: t.belowMoq ? 'down' : 'muted', text: t.moq ? `MOQ ${fmtInt(t.moq)}${t.belowMoq ? ': top up to the MOQ' : ''}` : '' })), null)))
+    const lead = S[0]?.leadDays ?? 10
+    const throughLbl = d.demand?.through ? new Date(d.demand.through + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '31 Dec'
+    const part = (x, kanary) => x.parts.filter((p) => /kanary/i.test(p.product) === kanary).reduce((a, p) => (p.count == null ? a : (a ?? 0) + p.count), null)
+    const tbl = h('table', { class: 'tbl stbl' },
+      h('thead', null, h('tr', null, ['Shade', 'Original SKU', 'Kanary SKU', 'On hand', 'Sold / day', 'Renewals 30d', `Need to ${throughLbl}`, 'Days of cover', 'Runs out', 'Reorder by', 'Status', 'Suggest'].map((x, i) => h('th', { class: i && i !== 10 ? 'num' : '', title: x === 'Renewals 30d' ? 'Units due to Loop subscribers in the next 30 days' : i === 6 ? 'Units needed from today to that date at the planned demand (campaign + Black Friday), plus any oversold' : null, text: x })))),
+      h('tbody', null, S.map((x) => h('tr', null,
+        h('td', null, h('b', { text: x.variant })),
+        h('td', { class: 'num muted', text: fmtInt(part(x, false)) }),
+        h('td', { class: 'num muted', text: fmtInt(part(x, true)) }),
+        h('td', { class: 'num' }, h('b', { text: fmtInt(x.onHand) }), x.oversold ? ' ' : null, x.oversold ? h('span', { class: 'tag bad', title: 'Zendrop shows a negative count: orders taken with no stock behind them', text: `oversold ${fmtInt(x.oversold)}` }) : null),
+        h('td', { class: 'num', title: x.rateSource === 'loop' ? 'Loop renewals only (a floor): real sales are higher' : x.sold != null ? `${fmtInt(x.sold)} units in ${x.rateSource === 'manual' ? man?.days : d.settings.baselineDays} days (${x.rateSource === 'manual' ? 'pasted report' : 'Shopify'})` : 'Needs per-shade sales' }, x.rate == null ? '–' : fmt1(x.rate), x.rateSource === 'loop' ? h('small', { class: 'muted', title: 'Renewals only: real sales are higher', text: ' renewals' }) : null),
+        h('td', { class: 'num', title: x.renewBeforeRestock != null ? `${fmtInt(x.renewBeforeRestock)} due within the ${x.leadDays}-day lead time` : 'Needs SERENTIA_LOOP_TOKEN' }, x.renew30 == null ? '–' : fmtInt(x.renew30), x.renewBeforeRestock > x.onHand ? ' ' : null, x.renewBeforeRestock > x.onHand ? h('span', { class: 'tag bad', title: 'More renewals due before a new batch can land than units on hand', text: 'short' }) : null),
+        h('td', { class: 'num' }, x.needThrough == null ? '–' : fmtInt(x.needThrough), x.shortThrough ? ' ' : null, x.shortThrough ? h('span', { class: 'tag bad', title: `On hand covers ${fmtInt(x.onHand)} of ${fmtInt(x.needThrough)}`, text: `short ${fmtInt(x.shortThrough)}` }) : null),
+        h('td', { class: 'num', text: x.cover == null ? (x.status === 'out' ? '0' : '–') : x.cover >= 365 ? '365+' : fmtInt(x.cover) }),
+        h('td', { class: 'num', text: x.status === 'out' ? 'now' : x.cover >= 365 ? '1+ year' : dayTxt(x.runsOut) }),
+        h('td', { class: 'num', text: ['out', 'reorder'].includes(x.status) ? 'today' : x.cover != null && x.cover - x.leadDays - d.settings.safetyDays >= 365 ? '1+ year' : dayTxt(x.reorderBy) }),
+        h('td', null, tag(SER_STATUS[x.status][0], SER_STATUS[x.status][1])),
+        h('td', { class: 'num', text: x.suggest ? fmtInt(x.suggest) : '–' })))))
+    wrap.append(demandBox(d.demand))
+    wrap.append(h('section', { class: 'section' },
+      h('div', { class: 'sec-head' }, h('h2', { text: 'Elixir+ Cream by shade' }), h('span', { class: 'why', text: `Reorder point = ${lead}-day lead time + ${d.settings.safetyDays} days safety. A suggested order covers ${d.settings.targetDays} days after it lands.` })),
+      h('div', { class: 'card', style: 'overflow:auto' }, S.length ? tbl : h('p', { class: 'muted', text: 'No shades found in the Zendrop Inventory tab.' }))))
+    if (src.loop?.error) wrap.append(h('div', { class: 'banner bad', text: `Serentia Loop: ${src.loop.error}` }))
+    if (!src.shopify.configured) wrap.append(salesBox(man))
+    if (!src.loop?.configured || src.loop?.manual) wrap.append(renewalsBox(src.loop))
+    const notes = []
+    const over = S.filter((x) => x.oversold)
+    if (over.length) notes.push(`${over.map((x) => `${x.variant} (${fmtInt(x.oversold)})`).join(', ')}: Zendrop shows a negative count, so orders were taken with no stock behind them. Those customers are waiting; ask Zendrop when the next batch lands, and keep the pre-order widget's dates honest.`)
+    const zero = out.filter((x) => !x.oversold)
+    if (zero.length) notes.push(`${zero.map((x) => x.variant).join(', ')} ${zero.length === 1 ? 'is' : 'are'} at zero. Make sure the pre-order widget is live for ${zero.length === 1 ? 'it' : 'them'} (Sell when out of stock on, real batch dates), or customers buy a shade that cannot ship.`)
+    notes.push('Each shade is the original Elixir+ listing (3064479) plus the "Kanary new product" listing (3373424) added together. Stock moved to the Kanary rows in October.')
+    if (!src.loop?.configured) notes.push('No subscriber renewals yet: paste the Loop subscription rows in the box above, or add SERENTIA_LOOP_TOKEN in Vercel.')
+    else if (src.loop.manual && Date.now() - new Date(src.loop.savedAt).getTime() > 7 * 864e5) notes.push(`The pasted Loop rows are ${agoTxt(src.loop.savedAt)} old: next order dates move every month, so paste them again.`)
+    else if (S.some((x) => x.renewBeforeRestock > x.onHand)) notes.push(`Short for subscribers: ${S.filter((x) => x.renewBeforeRestock > x.onHand).map((x) => x.variant).join(', ')} ${S.filter((x) => x.renewBeforeRestock > x.onHand).length === 1 ? 'has' : 'have'} more renewals due within the lead time than units on hand. Reorder now, or move those subscribers' next date in Loop.`)
+    if (src.loop?.untitled) notes.push(`${fmtInt(src.loop.untitled)} renewal units in Loop had no product title, so they are not in any shade.`)
+    if (S.some((x) => x.status === 'unknown')) notes.push('Days of cover and reorder dates need sales per shade: add the Serentia Shopify keys in Vercel.')
+    if (src.shopify.truncated) notes.push('More than 3,000 orders in the window: sales are undercounted.')
+    notes.push('Bundles: a variant title like "Buy 2 Get 1" counts as 3 units. Shopify variant names must contain the shade name.')
+    wrap.append(h('div', { class: 'grid2s' },
+      h('div', { class: 'card' }, h('h3', { text: 'Read this first' }), h('ul', { class: 'notes' }, notes.map((n) => h('li', { text: n })))),
+      h('div', { class: 'card' }, h('h3', { text: 'Sources' }), h('ul', { class: 'notes' },
+        h('li', null, 'Stock: Zendrop sheet, Inventory tab ', h('a', { href: `https://docs.google.com/spreadsheets/d/${src.zendrop.sheetId}/edit`, target: '_blank', rel: 'noopener', text: 'open' }), src.zendrop.cachedAt ? ` · read ${agoTxt(src.zendrop.cachedAt)}` : ''),
+        h('li', { text: src.loop?.manual ? `Renewals: ${src.loop.snapshot ? 'built-in Loop snapshot of ' + fmtDayY(src.loop.savedAt) : `Loop rows pasted ${agoTxt(src.loop.savedAt)} by ${src.loop.by || '?'}`} (${fmtInt(src.loop.monthly)} units a cycle)` : src.loop?.configured ? `Renewals: Loop${src.loop.cachedAt ? `, read ${agoTxt(src.loop.cachedAt)}` : ''}` : 'Renewals: not connected' }),
+        h('li', null, 'Live count: ', h('a', { href: 'https://app.zendrop.com/inventory', target: '_blank', rel: 'noopener', text: 'app.zendrop.com/inventory' })),
+        h('li', { text: src.shopify.configured ? `Sales: Shopify ${src.shopify.store || ''}${src.shopify.orders != null ? `, ${fmtInt(src.shopify.orders)} orders in ${d.settings.baselineDays} days` : ''}` : man ? `Sales: Shopify report pasted ${agoTxt(man.savedAt)} (${man.days} days)` : 'Sales: not connected yet' }))),
+      (d.others || []).length ? h('div', { class: 'card' }, h('h3', { text: 'Other products at Zendrop' }), tableView(['Product', 'SKU', 'Count'], d.others.map((o) => [`${o.product}${o.variant && !/default title/i.test(o.variant) ? ' · ' + o.variant : ''}`, o.sku, fmtInt(o.count)]))) : null))
+    return wrap
+  }
+
+  // Shopify report upload, used until the Serentia Shopify keys are in Vercel.
+  function salesBox(man) {
+    state.serPaste = state.serPaste || { text: '', days: '', period: '' }
+    const P = state.serPaste
+    const msg = h('span', { class: 'msg' })
+    const ta = h('textarea', { rows: 5, placeholder: 'Paste the report rows here (or lines like "Ivory 120"), or choose the CSV file above.', oninput: (e) => { P.text = e.target.value } }, P.text)
+    const daysIn = h('input', { type: 'number', min: 1, max: 366, value: P.days || '', placeholder: '30', style: 'width:70px', oninput: (e) => { P.days = e.target.value } })
+    const file = h('input', { type: 'file', accept: '.csv,text/csv', onchange: async (e) => {
+      const f = e.target.files?.[0]; if (!f) return
+      P.text = await f.text(); ta.value = P.text
+      // Shopify names exports "..._-_2026-09-26_-_2026-10-26.csv": take the window from it.
+      const m = f.name.match(/(\d{4}-\d{2}-\d{2})\D+(\d{4}-\d{2}-\d{2})/)
+      if (m) { const n = Math.round((Date.parse(m[2]) - Date.parse(m[1])) / 864e5) + 1; P.days = String(n); daysIn.value = P.days; P.period = `${dayTxt(m[1])} to ${dayTxt(m[2])}` }
+      msg.textContent = `Loaded ${f.name}${m ? ` (${P.days} days)` : ''}. Check the days, then Save.`
+    } })
+    const save = h('button', { class: 'btn sm', text: 'Save sales', onclick: async () => {
+      if (DEMO) { msg.textContent = 'Demo: nothing saved.'; return }
+      save.disabled = true; msg.textContent = 'Saving…'
+      try {
+        await api('/api/serentia/sales', { method: 'POST', body: { text: P.text, days: Number(P.days || 30), period: P.period } })
+        state.serPaste = null; await loadSerentia()
+      } catch (e) { msg.textContent = e.message; save.disabled = false }
+    } })
+    const clear = man ? h('button', { class: 'btn sm ghost', text: 'Clear saved sales', onclick: async () => { if (DEMO) return; try { await api('/api/serentia/sales', { method: 'DELETE' }); await loadSerentia() } catch (e) { msg.textContent = e.message } } }) : null
+    const card = h('div', { class: 'card salesbox', style: 'margin-top:16px' },
+      h('h3', { text: 'Sales from a Shopify report' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 8px;font-size:12.5px' }, 'Until the Serentia Shopify keys are in Vercel. In Shopify: Analytics → Reports → "Total sales by product", set the dates (e.g. last 30 days), split it by ', h('b', { text: 'product variant' }), ' so each shade has its own row, then Export → CSV. All Elixir+ listings count towards the same shades; brush and Hydra-Prep are left out. "Buy 2 Get 1" counts as 3 units.'))
+    if (man) {
+      const byShade = {}
+      for (const m of man.matched || []) if (m.shade) byShade[m.shade] = (byShade[m.shade] || 0) + m.tubes
+      card.append(h('p', { style: 'margin:0 0 8px;font-size:13px' }, h('b', { text: 'Saved: ' }), `${fmtInt(man.creamTotal)} units over ${man.days} days${man.period ? ` (${man.period})` : ''}. `,
+        man.shadeLevel ? Object.entries(byShade).map(([k, v]) => `${k} ${fmtInt(v)}`).join(' · ') : h('span', { class: 'tag warn', text: 'totals only, no shade rows' }),
+        (man.skipped || []).length ? h('span', { class: 'muted', text: ` · left out: ${man.skipped.slice(0, 4).join(', ')}${man.skipped.length > 4 ? '…' : ''}` }) : null))
+    }
+    card.append(h('div', { class: 'row', style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px' }, file, h('label', null, 'Days in the report ', daysIn)), ta,
+      h('div', { class: 'actions', style: 'display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap' }, save, clear, msg))
+    return card
+  }
+
+  // Planned demand: campaign uplift and Black Friday, shared by everyone.
+  function demandBox(dm) {
+    dm = dm || {}
+    const P = (state.serPlan ||= { upliftPct: dm.upliftPct ?? 0, bfFrom: dm.bfFrom || '', bfTo: dm.bfTo || '', bfMultiplier: dm.bfMultiplier ?? 1, through: dm.through || '' })
+    const msg = h('span', { class: 'msg' })
+    const inp = (k, type, w, extra = {}) => h('input', { type, value: P[k], style: `width:${w}`, oninput: (e) => { P[k] = e.target.value }, ...extra })
+    const save = h('button', { class: 'btn sm', text: 'Save plan', onclick: async () => {
+      if (DEMO) { msg.textContent = 'Demo: nothing saved.'; return }
+      save.disabled = true; msg.textContent = 'Saving…'
+      try { await api('/api/serentia/plan', { method: 'POST', body: { ...P, upliftPct: Number(P.upliftPct), bfMultiplier: Number(P.bfMultiplier) } }); state.serPlan = null; await loadSerentia() } catch (e) { msg.textContent = e.message; save.disabled = false }
+    } })
+    return h('div', { class: 'card dplan', style: 'margin-top:16px' },
+      h('h3', { text: 'Planned demand' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 10px;font-size:12.5px' }, 'Measured sales per shade × these factors drive days of cover, the Q4 need and suggestions. ',
+        dm.saved ? `Saved ${agoTxt(dm.savedAt)} by ${dm.by || '?'}.` : h('b', { class: 'bad-t', text: 'These are starting guesses, not history: set them from last year\'s Black Friday and the campaign plan.' })),
+      h('div', { class: 'dgrid' },
+        h('label', null, 'Campaign uplift ', inp('upliftPct', 'number', '80px', { min: -90, max: 1000, step: 5 }), ' % on every day'),
+        h('label', null, 'Black Friday ', inp('bfFrom', 'date', '150px'), ' to ', inp('bfTo', 'date', '150px')),
+        h('label', null, 'Black Friday sells ', inp('bfMultiplier', 'number', '70px', { min: 1, max: 50, step: 0.5 }), ' × normal'),
+        h('label', null, 'Plan stock through ', inp('through', 'date', '150px'))),
+      h('div', { class: 'actions', style: 'display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap' }, save, msg))
+  }
+
+  // Loop subscription rows pasted from the Loop admin, until SERENTIA_LOOP_TOKEN exists.
+  function renewalsBox(L) {
+    state.serLoop = state.serLoop || { text: '' }
+    const P = state.serLoop
+    const msg = h('span', { class: 'msg' })
+    const ta = h('textarea', { rows: 5, placeholder: 'Paste the Loop subscription rows here (every page).', oninput: (e) => { P.text = e.target.value } }, P.text)
+    const save = h('button', { class: 'btn sm', text: 'Save renewals', onclick: async () => {
+      if (DEMO) { msg.textContent = 'Demo: nothing saved.'; return }
+      save.disabled = true; msg.textContent = 'Saving…'
+      try { await api('/api/serentia/renewals', { method: 'POST', body: { text: P.text } }); state.serLoop = null; await loadSerentia() } catch (e) { msg.textContent = e.message; save.disabled = false }
+    } })
+    const clear = L?.manual && !L.snapshot ? h('button', { class: 'btn sm ghost', text: 'Clear saved renewals', onclick: async () => { if (DEMO) return; try { await api('/api/serentia/renewals', { method: 'DELETE' }); await loadSerentia() } catch (e) { msg.textContent = e.message } } }) : null
+    return h('div', { class: 'card salesbox', style: 'margin-top:16px' },
+      h('h3', { text: 'Subscriber renewals from Loop' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 8px;font-size:12.5px' }, 'Until the Loop API token is in Vercel. In Loop: Subscriptions → Status: Active. On each page, select the table rows (from the first subscription ID to the last price), copy, and paste here one page after another. The page reads each row\'s next order date and items ("Elixir+ CC Cream - Buff Beige x 1"). Paste again every week or two: next order dates move.'),
+      L?.manual ? h('p', { style: 'margin:0 0 8px;font-size:13px' }, h('b', { text: L.snapshot ? 'Using: ' : 'Saved: ' }), `${fmtInt(L.subscriptions)} subscriptions, ${fmtInt(L.monthly)} units a cycle, ${fmtInt(L.units)} due in the next 30 days · ${L.snapshot ? `built-in Loop snapshot of ${fmtDayY(L.savedAt)}: paste fresh rows to update it` : `pasted ${agoTxt(L.savedAt)} by ${L.by || '?'}`}`) : null,
+      ta, h('div', { class: 'actions', style: 'display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap' }, save, clear, msg))
+  }
+
+  function demoSerentia() {
+    // Snapshot of 26 Oct 2026: Zendrop sheet (23 Oct), Shopify net items sold per shade 26 Sep-26 Oct (31 days), Loop active subscriptions.
+    const RENEW = { Ivory: [9, 5], 'Buff Beige': [20, 11], 'Warm Honey': [21, 12], 'Honey Almond': [5, 1], 'Caramel Glow': [4, 2], 'Deep Mocha': [0, 0], Hazelnut: [0, 0] }
+    const mk = (variant, orig, kan, rate) => ({ variant, renew30: RENEW[variant][0], renewBeforeRestock: RENEW[variant][1], parts: [{ product: 'Serentia Elixir+ Cream', count: orig }, { product: 'Kanary new product', count: kan }].filter((p) => p.count != null), rate, leadDays: 10, moq: 2500 })
+    const rows = [mk('Ivory', 0, 5018, 268 / 31), mk('Buff Beige', 0, 3861, 277 / 31), mk('Warm Honey', 0, 4023, 253 / 31), mk('Honey Almond', 0, -28, 85 / 31), mk('Caramel Glow', 140, 1911, 29 / 31), mk('Deep Mocha', 857, 1952, 11 / 31), mk('Hazelnut', null, 1943, 3 / 31)]
+    const now = Date.now(), point = 17
+    const shades = rows.map((r) => {
+      const net = r.parts.reduce((a, p) => a + p.count, 0), onHand = Math.max(0, net), oversold = net < 0 ? -net : 0
+      const cover = onHand / r.rate
+      const status = onHand <= 0 ? 'out' : cover <= point ? 'reorder' : cover <= point + 14 ? 'soon' : 'ok'
+      return { ...r, onHand, oversold, sold: Math.round(r.rate * 31), rateSource: 'manual', cover: onHand ? cover : null, status,
+        runsOut: new Date(now + cover * 86400e3).toISOString(), reorderBy: new Date(now + Math.max(0, cover - point) * 86400e3).toISOString(),
+        suggest: ['out', 'reorder', 'soon'].includes(status) ? Math.ceil((r.rate * (point + 30) - onHand + oversold) / 100) * 100 : 0 }
+    }).sort((a, b) => ({ out: 0, reorder: 1, soon: 2, ok: 4 }[a.status] - { out: 0, reorder: 1, soon: 2, ok: 4 }[b.status]) || (a.cover ?? 0) - (b.cover ?? 0))
+    const suggest = shades.reduce((a, x) => a + x.suggest, 0)
+    for (const x of shades) { const days = Math.round((Date.parse('2026-12-31') - Date.now()) / 864e5) + 1; x.needThrough = Math.ceil(x.rate * (Math.max(0, days) + 5 * 2) + x.oversold); x.shortThrough = Math.max(0, x.needThrough - x.onHand) }
+    return { demand: { upliftPct: 0, bfFrom: '2026-11-27', bfTo: '2026-12-01', bfMultiplier: 3, through: '2026-12-31', saved: false }, settings: { baselineDays: 31, safetyDays: 7, targetDays: 30 }, updated: '10/23/2026',
+      sources: { zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', cachedAt: new Date().toISOString() }, shopify: { configured: false }, loop: { configured: true, manual: true, subscriptions: 64, monthly: 73, units: 59, savedAt: new Date().toISOString(), by: 'Demo' },
+        manual: { days: 31, period: '26 Sept to 26 Oct 2026', savedAt: new Date().toISOString(), by: 'Demo', creamTotal: rows.reduce((a, r) => a + Math.round(r.rate * 31), 0), shadeLevel: true, matched: rows.map((r) => ({ shade: r.variant, tubes: Math.round(r.rate * 31) })), skipped: ['Serentia™ Essence Blending Brush', 'Hydra-Prep Cream'] } },
+      others: [{ product: 'Serentia™ Essence Blending Brush', variant: 'Default Title', sku: 'E9FQVK5NWV', count: 0 }, { product: 'Hydra-Prep Cream', variant: '', sku: 'OSM0HYDR', count: 64 }],
+      shades, totals: { needThrough: shades.reduce((a, x) => a + x.needThrough, 0), shortThrough: shades.reduce((a, x) => a + x.shortThrough, 0), renew30: rows.reduce((a, r) => a + r.renew30, 0), subscriptions: 64, onHand: shades.reduce((a, x) => a + x.onHand, 0), oversold: shades.reduce((a, x) => a + x.oversold, 0), rate: rows.reduce((a, r) => a + r.rate, 0), suggest, moq: 2500, belowMoq: suggest > 0 && suggest < 2500 } }
+  }
+
+  // ---------- Refund matrix (public/innaderm/refund.js) ----------
+  const CHECK_CLS = { ok: 'good', bad: 'bad', warn: 'warn', info: '' }
+  const CHECK_TXT = { ok: '✓', bad: '✕', warn: '?', info: '·' }
+
+  function refundBox(t, ra) {
+    const box = h('div', { class: 'refund' })
+    box.append(h('div', { class: 'lbl' }, 'Refund check ', tag(ra.row, 'warn'), ' ', h('span', { text: ra.def.title }), ' ',
+      h('a', { href: '#', class: 'muted', style: 'font-size:11.5px', text: 'see matrix', onclick: (e) => { e.preventDefault(); state.matrixRow = ra.row; state.view = 'matrix'; safeSet(LS_VIEW, 'matrix'); render(); window.scrollTo(0, 0) } })))
+    box.append(h('ul', { class: 'rchecks' }, ra.checks.map((c) => h('li', null, h('span', { class: 'tag ' + (CHECK_CLS[c.state] || ''), text: CHECK_TXT[c.state] || '·' }), h('b', { text: ' ' + c.label + ' ' }), h('span', { text: c.value })))))
+    box.append(h('p', { class: 'rdecide' }, h('b', { text: 'Policy: ' }), ra.def.policy))
+    box.append(h('p', { class: 'rdecide' }, h('b', { text: 'Next step: ' }), ra.decision))
+    if (ra.escalate) {
+      box.append(h('div', { class: 'rcalvin' }, h('b', { text: 'Needs Calvin: ' }), ra.escalate,
+        !t.clickup ? h('button', { class: 'btn sm ghost', style: 'margin-left:8px', text: 'Send to Calvin', onclick: () => { state.escalating = t.id; render() } }) : null))
+    } else box.append(h('div', { class: 'rok', text: 'The team can handle this without Calvin.' }))
+    return box
+  }
+
+  function matrixView() {
+    const R = window.InnRefund
+    const wrap = h('div', { class: 'wrap matrix' })
+    if (!R) { wrap.append(h('div', { class: 'banner bad', text: 'The refund matrix did not load. Refresh the page.' })); return wrap }
+    wrap.append(h('div', { class: 'banner' + (R.STATUS.approved ? ' info' : '') }, h('b', { text: R.STATUS.approved ? 'Approved by Calvin. ' : 'Draft. ' }), R.STATUS.note))
+    wrap.append(h('div', { class: 'card', style: 'margin-top:16px' },
+      h('h2', { text: 'Published refund policy' }),
+      h('p', { class: 'muted', style: 'margin:2px 0 10px' }, `innaderm.com/policies/refund-policy, last updated ${R.STATUS.policyUpdated}. The page is what customers and card networks hold us to: where this tab and the page differ, the page wins.`),
+      h('dl', { class: 'policy' }, R.POLICY.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]))))
+    const needle = (state.matrixSearch || '').toLowerCase()
+    const rows = R.ROWS.filter((r) => !needle || [r.id, r.title, r.policy, r.team, r.calvin].join(' ').toLowerCase().includes(needle))
+    const tbl = h('table', { class: 'tbl mtbl' },
+      h('thead', null, h('tr', null, ['#', 'Situation', 'Policy says', 'Team decision (no Calvin)', 'Escalate to Calvin when'].map((x) => h('th', { text: x })))),
+      h('tbody', null, rows.map((r) => h('tr', { id: 'm-' + r.id, class: state.matrixRow === r.id ? 'hl' : '' },
+        h('td', null, h('b', { text: r.id })), h('td', null, h('b', { text: r.title })), h('td', { text: r.policy }), h('td', { text: r.team }), h('td', { text: r.calvin })))))
+    wrap.append(h('div', { class: 'card', style: 'margin-top:16px' },
+      h('div', { class: 'mhead' }, h('h2', { text: 'The matrix' }),
+        h('input', { class: 'search', type: 'search', placeholder: 'Search: lost, renewal, rash, R8…', value: state.matrixSearch || '', oninput: (e) => { state.matrixSearch = e.target.value; clearTimeout(state._ms); state._ms = setTimeout(() => { render(); const el = $('.matrix .search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) } }, 200) } })),
+      h('p', { class: 'muted', style: 'margin:2px 0 10px' }, 'Before any row, check: is it their first order, the carrier delivery date, any earlier guarantee refund (same person, household, address or card), any chargeback. Open a ticket on the Support board to see these filled in from Shopify.'),
+      h('div', { style: 'overflow:auto' }, tbl)))
+    wrap.append(h('div', { class: 'grid2', style: 'margin-top:16px' },
+      h('div', { class: 'card' }, h('h2', { text: 'Always send to Calvin' }), h('ul', null, R.ALWAYS_CALVIN.map((x) => h('li', { text: x })))),
+      h('div', { class: 'card' }, h('h2', { text: R.STATUS.approved ? 'Decided' : 'Waiting on Calvin' }), h('ol', null, R.DECISIONS.map((x) => h('li', { text: x }))))))
+    wrap.append(h('p', { class: 'muted', style: 'margin-top:12px;font-size:11.5px', text: 'Built from the published policy and 116 past refund cases in support@innaderm.com (2 Jun to 24 Oct 2026). Suggestions only: nothing here refunds, cancels or sends anything. A person does the action, checks it happened, then sends.' }))
+    if (state.matrixRow) setTimeout(() => { const el = document.getElementById('m-' + state.matrixRow); if (el) el.scrollIntoView({ block: 'center' }); state.matrixRow = null }, 50)
+    return wrap
+  }
+
+  function demoBoard() {
+    const ago = (h2) => new Date(Date.now() - h2 * 3600e3).toISOString()
+    const mk = (id, name, email, subject, category, last, waiting, extra = {}) => ({
+      id, subject, customerName: name, customerEmail: email, category, autoCategory: category, flags: [], excerpt: last, lastExcerpt: last,
+      orderNumbers: [], firstIn: ago(waiting + 30), lastIn: ago(waiting), lastOut: ago(waiting + 20), lastFrom: 'in', msgsIn: 2, msgsOut: 1, inInbox: true,
+      waitingHours: waiting, status: 'New', statusSet: false, note: '', reopened: false, needsReply: true, clickup: null, drafts: [], link: 'https://mail.google.com', customerLink: 'https://mail.google.com', orders: [], vip: false, spent: 0, ...extra,
+    })
+    const ord = (name, o) => ({ name, createdAt: ago(240), cancelledAt: null, financial: 'PAID', status: 'FULFILLED', total: 59.99, subscription: false, fulfilledAt: ago(150), deliveredAt: null, carrier: 'USPS', trackingNumber: '9400111899223344556677', trackingUrl: null, ...o })
+    const tickets = [
+      mk('d1', 'Diana Lopez', 'diana@example.com', 'Where is my order?', 'Where is my order', 'Hi, I ordered 10 days ago and still have nothing. Can you tell me where it is? Order #INN17481', 30, { orders: [ord('#INN17481', {})], orderNumbers: ['#INN17481'] }),
+      mk('d2', 'Brittany Cole', 'brit@example.com', 'Cancel my subscription', 'Subscription', 'Please cancel, I have too many bottles at home right now.', 9, { orders: [ord('#INN17440', { subscription: true }), ord('#INN16012', { subscription: true, deliveredAt: ago(500) })], vip: true, spent: 119.98 }),
+      mk('d3', 'Dawn Reyes', 'dawn@example.com', 'Bad reaction', 'Adverse reaction', 'I got a rash on my neck after a week of taking these. Should I stop?', 3, { flags: ['reaction'], orders: [ord('#INN17390', { deliveredAt: ago(200) })] }),
+      mk('d4', 'Tyler Brooks', 'tyler@example.com', 'Refund', 'Refund / return', 'It has not done anything for my dandruff after 3 weeks, I want my money back.', 52, { status: 'With Calvin', statusSet: true, clickup: { id: 'x', url: 'https://app.clickup.com', status: 'founder responded', calvinReplied: true, comments: [{ by: 'Calvin Beck', fromCalvin: true, at: ago(2), text: 'Offer 3 packs at 50% first. If he insists, refund the 1-pack.' }] } }),
+      mk('d5', 'Kevin Ng', 'kevin@example.com', 'Re: Your order', 'Where is my order', 'Thanks, but tracking has not moved in a week.', 1.5, { reopened: true, statusSet: true, status: 'Done', orders: [ord('#INN17501', { fulfilledAt: ago(170) })], drafts: [] }),
+      mk('d6', 'Patrice Hall', 'patrice@example.com', 'Question before buying', 'Product question', 'Can I take this with my thyroid medication?', 20),
+      mk('d7', null, 'mickeyapplegate55@gmail.com', 'Re: Upcoming order for subscription #83611484229', 'Subscription', 'Ok thanks', null, { lastFrom: 'out', lastOut: ago(42), needsReply: false, status: 'Replied', vip: true }),
+      mk('d7', 'Juhi Patel', 'juhi@example.com', '90 day refund request', 'Not working / results', 'I took it every morning for the full 90 days and my scalp is the same. I would like my money back under the guarantee.', 26, { orders: [ord('#INN16399', { total: 79.98, createdAt: ago(24 * 100), fulfilledAt: ago(24 * 92), deliveredAt: ago(24 * 82), subscription: true })], orderNumbers: ['#INN16399'], orderCount: 1 }),
+      mk('d8', 'Steve Marsh', 'steve@example.com', 'Re: Order #INN18462 confirmed', 'Cancel order', 'I want to cancel this order please, I only placed it this morning.', 4, { orders: [ord('#INN18462', { total: 54.87, createdAt: ago(8), status: 'UNFULFILLED', fulfilledAt: null, trackingNumber: null })], orderNumbers: ['#INN18462'], orderCount: 1 }),
+    ]
+    const tplDemo = [
+      { key: 'wismo', title: 'Where is my order', categories: ['Where is my order'], approved: true, checklist: 'Check the order line matches Shopify.', body: "Hi {first_name},\n\nThank you for reaching out, and sorry for the wait.\n\n{order_status}\n\nIf anything looks off, just reply here and I'll chase it for you.\n\n{agent}\nInnaderm" },
+      { key: 'sub_change', title: 'Subscription: wants to cancel or pause', categories: ['Subscription'], approved: true, checklist: 'If they confirm: send to Calvin (Loop).', body: "Hi {first_name},\n\nThanks for letting me know. Before I make any changes, may I ask what prompted this? If it's timing or having too many on hand, I can pause your subscription or move your next delivery back instead, so nothing ships until you're ready.\n\n{agent}\nInnaderm" },
+      { key: 'reaction', title: 'Adverse reaction', categories: ['Adverse reaction'], approved: false, checklist: 'Send to Calvin the same day.', body: "Hi {first_name},\n\nI'm really sorry to hear this. Please stop taking the capsules for now, and if the reaction is severe or doesn't settle, please speak to a doctor or pharmacist.\n\n{agent}\nInnaderm" },
+      { key: 'refund', title: 'Refund request (first reply)', categories: ['Refund / return'], approved: false, checklist: 'Any refund needs Calvin.', body: 'Hi {first_name},\n\nThank you for getting in touch...\n\n{agent}\nInnaderm' },
+      { key: 'product_q', title: 'Product question', categories: ['Product question'], approved: false, checklist: 'Only answer from innaderm.com.', body: "Hi {first_name},\n\nThanks for your question!\n\n[ANSWER FROM THE PRODUCT PAGE OR CALVIN]\n\nIf you'd like to give it a try, here's 15% off your order: {discount_code}.\n\n{agent}\nInnaderm" },
+      { key: 'general', title: 'General reply', categories: ['Other'], approved: false, body: 'Hi {first_name},\n\n[YOUR REPLY]\n\n{agent}\nInnaderm' },
+    ]
+    const vars = (t) => ({ first_name: (t.customerName || 'there').split(' ')[0], order_number: t.orders[0]?.name || '[ORDER NUMBER]', order_status: t.orders[0] ? (t.orders[0].fulfilledAt ? `Your order ${t.orders[0].name} shipped on ${fmtDate(t.orders[0].fulfilledAt)} with USPS. Your tracking number is ${t.orders[0].trackingNumber}.` : `Your order ${t.orders[0].name} hasn't shipped yet.`) : "Could you send me your order number (it starts with #INN)?", order_or_ask: 'Your order number', discount_code: 'WELCOME15' })
+    for (const t of tickets) t.vars = vars(t)
+    const cats = ['Where is my order', 'Subscription', 'Refund / return', 'Product question', 'Not working / results', 'Cancel order', 'Marked delivered, not received', 'Billing / payment', 'Address change', 'Damaged / wrong / missing item', 'Discount / offer', 'Adverse reaction', 'Chargeback / dispute threat', 'Other']
+    const defaults = Object.fromEntries(cats.map((c) => [c, (tplDemo.find((x) => x.categories.includes(c)) || tplDemo[tplDemo.length - 1]).key]))
+    const pw = { 'Where is my order': 52, Subscription: 31, 'Refund / return': 18, 'Product question': 16, 'Not working / results': 12, 'Cancel order': 9, 'Marked delivered, not received': 7, 'Billing / payment': 6, 'Address change': 4, 'Damaged / wrong / missing item': 3, 'Discount / offer': 3, 'Adverse reaction': 2, 'Chargeback / dispute threat': 2, Other: 8 }
+    const never = new Set(['Adverse reaction', 'Chargeback / dispute threat'])
+    const stagesDemo = [{ key: 'manual', label: 'Manual', save: 0, help: 'Written from scratch each time.' }, { key: 'template', label: 'Approved template', save: 0.4, help: 'Agent picks the template; name, order and tracking fill in.' }, { key: 'autodraft', label: 'Auto-drafted in Gmail', save: 0.7, help: 'A filled draft is waiting in the Gmail thread when the ticket arrives. Agent checks and sends.' }, { key: 'autosend', label: 'Auto-send', save: 0.95, help: 'Sent without a person. Next step: Claude-written replies with a review sample. Not switched on yet.' }]
+    const stageOf = { 'Where is my order': 'autodraft', Subscription: 'template' }
+    const automation = cats.map((c) => { const st = stagesDemo.find((s) => s.key === (stageOf[c] || 'manual')); const tpl = tplDemo.find((x) => x.key === defaults[c]); return { category: c, potential: never.has(c) ? 'never' : ['Not working / results', 'Other'].includes(c) ? 'low' : 'high', play: '', stage: st.key, stageSince: st.key !== 'manual' ? ago(24 * 6) : null, owner: st.key !== 'manual' ? 'Khethiwe' : '', nextStep: c === 'Subscription' ? 'Approve wording with Calvin, then auto-draft' : '', perWeek: pw[c], hoursPerWeek: (pw[c] * 6) / 60, savedHoursPerWeek: (pw[c] * 6 * st.save) / 60, template: tpl ? { key: tpl.key, title: tpl.title, approved: tpl.approved } : null, draftsAgent28: st.key === 'template' ? 41 : 3, draftsAuto28: st.key === 'autodraft' ? 166 : 0, tickets28: pw[c] * 4 } })
+    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
+  }
+
   // ---------- demo data (layout check without secrets: /innaderm?demo=1) ----------
   function demoData() {
     const days = state.days
@@ -1054,7 +1900,7 @@
         zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', tabs: [{ name: 'Fulfillment Issues', gid: '1279079658', open: 23, raised7: 9, resolved7: 12, oldestDays: 31, byTopic: { 'Stuck In Transit': 9, 'Unfulfilled': 7, 'Cancellation': 4, 'HOLD': 3 }, rowsInnaderm: 40, skippedOther: 0, openRows: [{ order: '#INN70312', topic: 'Stuck In Transit', ageDays: 31 }, { order: '#INN71044', topic: 'Unfulfilled', ageDays: 12 }] }, { name: 'Zendrop Order Issues', gid: '124374285', open: 11, raised7: 4, resolved7: 6, oldestDays: 19, byTopic: { 'Incomplete Shipping Address': 8, 'Customer Phone Number Needed': 3 }, rowsInnaderm: 17, skippedOther: 0, openRows: [{ order: '#INN70980', topic: 'Incomplete Shipping Address', ageDays: 19 }] }] },
         clickup: { lists: [{ id: '901222538715', name: 'Founder Escalations', total: 6, overdue: 2, unassigned: 1, byStatus: { 'to do': 4, 'in progress': 2 }, tasks: [{ id: 'a', name: 'Chargeback #IN1988 – evidence pack', status: 'in progress', url: 'https://app.clickup.com', due: new Date(Date.now() - 86400e3).toISOString(), overdue: true, assignees: ['Khethiwe'] }, { id: 'b', name: 'Pre-order button test on Serentia', status: 'to do', url: 'https://app.clickup.com', due: new Date(Date.now() + 3 * 86400e3).toISOString(), overdue: false, assignees: [] }] }, { id: '901216052461', name: 'Ops Overview', total: 14, overdue: 3, unassigned: 2, byStatus: { 'to do': 9, 'in progress': 5 }, tasks: [{ id: 'c', name: 'Weekly Zendrop reconciliation', status: 'to do', url: 'https://app.clickup.com', due: new Date(Date.now() + 86400e3).toISOString(), overdue: false, assignees: ['Khethiwe'] }] }] },
       },
-      settings: { finished_source: 'shopify', finished_on_hand: null, packaging_on_hand: 3600, lead_finished_with_packaging: 10, lead_finished_without_packaging: 22, lead_packaging: 14, moq_finished: 2500, moq_packaging: 5000, unit_cost_finished: 4.1, unit_cost_packaging: 0.35, baseline_days: 14, scale_pct: 20, scale_days_default: 3, safety_days: 7, packaging_per_unit: 1, tracked_variant_ids: [], clickup_lists: [{ id: '901222538715', name: 'Founder Escalations' }, { id: '901216052461', name: 'Ops Overview' }], zendrop_sheet_id: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY' },
+      settings: { finished_source: 'shopify', finished_on_hand: null, packaging_on_hand: 3600, lead_finished_with_packaging: 10, lead_finished_without_packaging: 22, lead_packaging: 14, moq_finished: 2500, moq_packaging: 5000, unit_cost_finished: 4.1, unit_cost_packaging: 0.35, baseline_days: 14, scale_pct: 20, scale_days_default: 3, safety_days: 7, packaging_per_unit: 1, tracked_variant_ids: [], clickup_lists: [{ id: '901222538715', name: 'Founder Escalations' }, { id: '901216052461', name: 'Ops Overview' }], zendrop_sheet_id: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', inbound_stock: [{ id: 'a', item: 'finished', units: 2374, status: 'in_transit', to: 'Zendrop', eta: '2026-11-03', eta_text: 'early next week', note: 'Part 1 of 3,000.', source: 'Ava on Slack' }, { id: 'b', item: 'finished', units: 626, status: 'waiting_packaging', to: 'Zendrop', eta: null, eta_text: 'next batch', note: 'Held back: not enough bags.' }, { id: 'c', item: 'packaging', units: 4000, status: 'ordered', to: 'Capsule factory', eta: '2026-11-06', eta_text: 'early November', note: 'Bags for the next batches.' }] },
       settingsMeta: {},
       viewer: { name: 'Demo viewer', role: 'admin' },
     }

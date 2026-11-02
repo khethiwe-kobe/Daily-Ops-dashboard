@@ -18,8 +18,6 @@ ticket file frozen for five days.
 | `/api/health` | Unauthenticated. Says whether the database is wired up. |
 | `/vote` | Thornies Matric Dance 2026 voting page. Public; send this link to voters. |
 | `/matric-dance` | Live results board for the dance. Needs the board's access key (or `SYNC_KEY`). |
-| `/innaderm` | Innaderm Ops dashboard: fulfilment, inventory, reorders, customer service. Access key. |
-| `/serentia` | Serentia Ops dashboard: stock per shade, Black Friday cover, reorders. Access key. |
 
 ## Environment variables
 
@@ -117,12 +115,13 @@ stored hashed in Postgres (`inn_*` tables, created on first use).
 | Name | Required | Notes |
 |---|---|---|
 | `INNADERM_ADMIN_KEY` | yes | Long random string (12+ chars). Bootstrap admin key; shows in the key list once used. |
+| `INNADERM_ADMIN_NAME` | no | Name shown for the admin key (header, key list, audit log). Defaults to `Khethiwe`. |
 | `INNADERM_SHOPIFY_CLIENT_ID` | yes* | Client ID of a Shopify Dev Dashboard app installed on the Innaderm store with `read_orders`, `read_fulfillments`, `read_products`, `read_inventory`, `read_locations`. Access tokens are fetched with the client credentials grant (they last about 24h) and cached in `inn_cache`. |
 | `INNADERM_SHOPIFY_CLIENT_SECRET` | yes* | Client secret of the same app. |
 | `INNADERM_SHOPIFY_TOKEN` | no* | Alternative to the two above: a permanent `shpat_` token from a legacy custom app made in the store admin before 2026. Takes precedence when set. |
 | `INNADERM_SHOPIFY_STORE` | no | Defaults to `f4f3a5-ad.myshopify.com` (innaderm.com). |
 | `INNADERM_LOOP_TOKEN` | no | Loop Subscriptions admin API token (Loop admin > Settings > API Tokens). Without it renewals are estimated from recurring orders. |
-| `INNADERM_CS_INGEST_KEY` | no | Shared secret for the support-Gmail Apps Script that feeds the Customer service tab. |
+| `INNADERM_CS_INGEST_KEY` | no | Shared secret for the support-Gmail Apps Script that feeds the CS metrics tab and the support board (and picks up Gmail drafts). |
 | `INNADERM_CLICKUP_TOKEN` | no | ClickUp personal API token. Shows open Founder Escalations / Ops Overview tasks. |
 
 Shopify history is synced into `inn_orders` (120-day backfill on first load,
@@ -133,6 +132,33 @@ of the variables above are set (`shopifyAuth` names the Shopify method in use)
 and whether the database answers. *Shopify needs either the client ID + secret
 or the legacy token.
 `/innaderm?demo=1` renders the layout with sample data and no secrets.
+
+### Serentia stock tab
+
+`/innaderm?tab=serentia`, same login keys. Elixir+ Cream stock per shade from
+the **Inventory** tab of Zendrop's shared Serentia sheet ("Serene [3730212] |
+Zendrop", link-shared, read as CSV and cached 15 minutes): the visible
+"Inventory Count" column, MOQ and lead time. Each shade adds the original
+Elixir+ listing (3064479) and the "Kanary new product" listing (3373424_3064479-*)
+together; a negative count shows as oversold. Other products (brush, Hydra-Prep)
+are listed separately. Days of cover and reorder dates need sales per shade from
+the Serentia Shopify store (variables below).
+
+| Name | Required | Notes |
+|---|---|---|
+| `SERENTIA_SHOPIFY_STORE` | for sales | The store's `xxxx.myshopify.com` domain. |
+| `SERENTIA_SHOPIFY_CLIENT_ID` / `SERENTIA_SHOPIFY_CLIENT_SECRET` | for sales | A Dev Dashboard app on the Serentia store with `read_orders`. Or `SERENTIA_SHOPIFY_TOKEN` (legacy `shpat_`). |
+| `SERENTIA_LOOP_TOKEN` | no | Loop admin API token for the Serentia store (Loop admin → Settings → API Tokens). Adds renewals due in the next 30 days per shade, flags shades with more renewals due within the lead time than stock, and uses renewals as a floor on daily demand. |
+| `SERENTIA_ZENDROP_SHEET_ID` | no | Defaults to the Serene Zendrop sheet. |
+| `SERENTIA_ZENDROP_INVENTORY_GID` | no | The Inventory tab's `gid=` from its URL; without it the tab is read by name. |
+
+Until those are set, sales can be uploaded from a Shopify Analytics CSV ("Total sales
+by product", split by product variant for per-shade dates) in the box under the
+table; it is stored in `inn_cache` (`ser_manual_sales`) via `POST /api/serentia/sales`.
+Live Shopify sales replace it automatically once the keys exist.
+
+Code: `lib/serentia/stock.js`, `app/api/serentia/stock`. Reorder point = lead
+time + 7 days safety; a suggested order covers 30 days after it lands.
 
 ### Customer service tab (support Gmail)
 
@@ -153,37 +179,34 @@ Ticket types are keyword rules in `lib/innaderm/cs.js`; after changing them,
 `POST /api/innaderm/cs/reclassify` (admin) re-sorts stored tickets.
 `/innaderm?demo=1&tab=cs` shows the tab with sample data.
 
-## Serentia Ops dashboard (`/serentia`)
+### Support board (work the Innaderm inbox)
 
-Stock per shade, whether it lasts through Black Friday, and what to reorder
-from Zendrop. Started as a copy of the Innaderm dashboard (`public/serentia`,
-`app/api/serentia/*`, `lib/serentia/*`, `ser_*` tables) so neither can break
-the other; the differences:
+`/innaderm?tab=board`. The Serentia board's working view for the support Gmail.
+Every open ticket grouped by type, risky ones (dispute, legal, reaction) first,
+then oldest. Queues: Needs reply, They replied, With Calvin, Drafted, Waiting on
+customer, All open, Done. Each ticket shows the customer's latest message, their
+Shopify orders (by #INN number, else by email, live; VIP = 2+ orders or $100+),
+status, type correction, an internal note, and a reply composer.
 
-- **Per shade, not one total.** Orders are synced with their line items
-  (`ser_order_lines`), so sales and renewals are split by shade. Shades are
-  matched by name across Shopify, Loop and the sheet; the list is in Settings.
-- **Stock comes from the Zendrop sheet** (Inventory tab, Calvin's count) by
-  default, because Zendrop holds the stock. Only rows whose SKU carries one of
-  the configured Zendrop product ids count (default `3373424`, the current
-  Elixir+ Cream), so the old version and the brushes are ignored. Set the
-  tab's `gid` in Settings for the most reliable read; without it the tab is
-  looked up by name. Shopify inventory is the alternative.
-- **The model** is new orders per shade over the run-rate window, times the
-  Black Friday multiplier between the sale dates, plus Loop renewals due in
-  the next 30 days. Each shade gets days of cover, run-out date, order-by date
-  (run-out − lead time − buffer) and units to order to last until the
-  "cover until" date. Oversold shades (negative counts) are due now.
-- No customer service tab: Serentia support is on the Re:amaze board.
+- **Replies** come from templates (`inn_cs_templates`, seeded from
+  `DEFAULT_TEMPLATES` in `lib/innaderm/csboard.js`, editable by admins on the
+  Templates tab). `{first_name}`, `{order_status}` (shipped / tracking /
+  delivered / not yet shipped, from Shopify), `{order_number}`,
+  `{order_or_ask}`, `{discount_code}`, `{agent}` fill in; `[CAPITALS]` must be
+  replaced by the agent. Signed with the agent's own name ("Signing as").
+- **Put in Gmail as draft** queues the reply (`inn_cs_drafts`); the Apps
+  Script (every 5 min) creates it as a draft reply in the thread, so the agent
+  checks it in Gmail and presses Send.
+- **Send to Calvin** creates a task in ClickUp Founder Escalations (assigned to
+  Calvin, tag `innaderm`, `innaderm-thread:` line, custom fields filled).
+  Status and Calvin's comments show back on the ticket. Needs
+  `INNADERM_CLICKUP_TOKEN`.
+- **Automations** tab: each ticket type moves Manual -> Approved template ->
+  Auto-drafted in Gmail -> (Auto-send, not yet). Auto-drafted types get a filled
+  draft queued as soon as a new customer message is ingested, using the type's
+  approved template; never for flagged tickets, adverse reactions or disputes,
+  and never while a `[PLACEHOLDER]` is left. Hours saved are estimated from
+  tickets per week x `cs_minutes_per_ticket` x the stage's saving share.
 
-| Name | Required | Notes |
-|---|---|---|
-| `SERENTIA_ADMIN_KEY` | yes | Bootstrap admin key, as for Innaderm. |
-| `SERENTIA_SHOPIFY_STORE` | yes | The store's `xxx.myshopify.com` name. No default, so it can never read another brand's store. |
-| `SERENTIA_SHOPIFY_CLIENT_ID` / `SERENTIA_SHOPIFY_CLIENT_SECRET` | yes* | Dev Dashboard app on the Serentia store, same scopes as Innaderm's. |
-| `SERENTIA_SHOPIFY_TOKEN` | no* | Legacy `shpat_` token instead of the two above. |
-| `SERENTIA_LOOP_TOKEN` | no | Loop admin API token for the Serentia store. Without it renewals are estimated from renewal orders in the last 30 days. |
-| `SERENTIA_CLICKUP_TOKEN` | no | ClickUp personal API token, if lists are configured. |
-
-`/api/serentia/health` (unauthenticated) says which are set.
-`/serentia?demo=1` renders the layout with made-up figures.
+Updating the Apps Script: paste the new `scripts/innaderm-gmail-sync.gs` over
+the old one (keep the key) and run `upgrade` once.

@@ -1,4 +1,4 @@
-import { session, unauthorized, forbidden } from '../../../../lib/innaderm/auth'
+import { session, unauthorized, forbidden, seesOps } from '../../../../lib/innaderm/auth'
 import { getSettings, saveSettings } from '../../../../lib/innaderm/settings'
 
 export const runtime = 'nodejs'
@@ -7,6 +7,7 @@ export const dynamic = 'force-dynamic'
 export async function GET(request) {
   const s = await session(request).catch(() => null)
   if (!s) return unauthorized()
+  if (!seesOps(s)) return forbidden()
   return Response.json(await getSettings(), { headers: { 'Cache-Control': 'no-store' } })
 }
 
