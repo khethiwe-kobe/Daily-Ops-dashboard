@@ -155,7 +155,9 @@
     if (!sh?.configured || state.syncing) return
     const st = sh.sync || {}
     const stale = !st.lastRunAt || Date.now() - new Date(st.lastRunAt).getTime() > 10 * 60e3
-    if (!force && st.backfilled && !stale) return
+    // The refund/dispute history walks after the orders; keep going until it is done.
+    const k = state.data?.kpi?.sync
+    if (!force && st.backfilled && !stale && (k?.complete || k?.error)) return
     state.syncing = true; render()
     try {
       for (let i = 0; i < 12; i++) {
@@ -474,7 +476,7 @@
   function hideTip() { tip.hidden = true }
 
   // Multi-series line chart with crosshair + one tooltip for every series.
-  function lineChart({ labels, series, height = 200, yFormat = fmtCompact, bandIdx = null, sparse = false }) {
+  function lineChart({ labels, series, height = 200, yFormat = fmtCompact, bandIdx = null, sparse = false, xFormat = dayLabel }) {
     const W = sparse ? 320 : 640, H = height, m = { t: 14, r: 14, b: 26, l: 36 }
     const iw = W - m.l - m.r, ih = H - m.t - m.b
     const n = labels.length
@@ -496,7 +498,7 @@
       const last = i === n - 1
       if (!(i % step === 0 || last)) return
       if (!last && n - 1 - i < step / 2) return
-      ax.append(s('text', { x: x(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : last ? 'end' : 'middle', text: dayLabel(l) }))
+      ax.append(s('text', { x: x(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : last ? 'end' : 'middle', text: xFormat(l) }))
     })
     svg.append(ax)
     if (bandIdx != null) svg.append(s('rect', { x: x(bandIdx), y: m.t, width: Math.max(0, W - m.r - x(bandIdx)), height: ih, fill: 'var(--surface-2)', opacity: .6 }))
@@ -518,7 +520,7 @@
       const i = Math.max(0, Math.min(n - 1, Math.round(((px - m.l) / iw) * (n - 1))))
       xh.setAttribute('x1', x(i)); xh.setAttribute('x2', x(i)); xh.setAttribute('opacity', 1)
       series.forEach((sr, si) => { dots[si].setAttribute('cx', x(i)); dots[si].setAttribute('cy', y(sr.values[i])); dots[si].setAttribute('opacity', 1) })
-      showTip(ev.clientX, ev.clientY, dayLabel(labels[i]), series.map((sr) => ({ color: sr.color, label: sr.name, value: (sr.format || fmtInt)(sr.values[i]) })))
+      showTip(ev.clientX, ev.clientY, xFormat(labels[i]), series.map((sr) => ({ color: sr.color, label: sr.name, value: (sr.format || fmtInt)(sr.values[i]) })))
     }
     hit.addEventListener('pointermove', move)
     hit.addEventListener('pointerleave', () => { xh.setAttribute('opacity', 0); dots.forEach((d) => d.setAttribute('opacity', 0)); hideTip() })
@@ -664,6 +666,7 @@
     wrap.append(planSection(d, dec))
     wrap.append(setupBanners(d))
     wrap.append(fulfilmentSection(d))
+    wrap.append(lossSection(d))
     wrap.append(inventorySection(d, dec))
     wrap.append(needSection(d, dec))
     wrap.append(reorderSection(d, dec))
@@ -761,6 +764,84 @@
   }
   function mini(label, value, deltaEl) {
     return h('div', { class: 'tile' }, h('div', { class: 'label', text: label }), h('div', { class: 'value', style: 'font-size:22px', text: value }), deltaEl)
+  }
+
+  // ----- Refunds, exchanges & disputes (month by month since launch) -----
+  // Calvin, 26 Oct: Khethiwe takes over refund approvals and is measured on
+  // bringing these down. Shopify holds payouts at a 1% dispute rate, so the
+  // dispute card warns from 0.8%.
+  const DISPUTE_WARN = 0.8
+  const monthLabel = (ym) => { const t = new Date(ym + '-01T00:00:00Z'); return `${t.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })} ’${String(t.getUTCFullYear()).slice(2)}` }
+  const monthLong = (ym) => new Date(ym + '-01T00:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+  // Two decimals: 0.97% and 1% are a different answer at a 1% hold.
+  const pct1 = (v) => (v == null || !isFinite(v) ? '–' : v.toFixed(2) + '%')
+  function lossRates(m) {
+    return {
+      refund: m.sales > 0 ? (m.refunded / m.sales) * 100 : null,
+      refundOrders: m.orders ? (m.refundedOrders / m.orders) * 100 : null,
+      replace: m.paidOrders ? (m.replacements / m.paidOrders) * 100 : null,
+      dispute: m.paidOrders ? (m.disputes / m.paidOrders) * 100 : null,
+    }
+  }
+  function lossSection(d) {
+    const S = d.settings
+    const K = d.kpi
+    const sec = h('section', { class: 'section' }, h('div', { class: 'sec-head' }, h('h2', { text: 'Refunds, exchanges & disputes' }), h('span', { class: 'why', text: 'Month by month since the first order. Each refund or dispute counts against the month its order was placed.' })))
+    if (!K || K.error) { sec.append(h('div', { class: 'card setup' }, h('p', { class: 'muted', text: K?.error ? `Could not load: ${K.error}` : 'Needs Shopify connected.' }))); return sec }
+    if (K.sync?.error) sec.append(h('div', { class: 'banner bad', text: `Order history for these cards: ${K.sync.error}. It retries on the next load.` }))
+    else if (!K.sync?.complete) sec.append(h('div', { class: 'banner' }, `Loading the full order history for these cards, newest first (${fmtInt(K.months.reduce((a, m) => a + m.orders, 0))} orders so far). Keep this tab open.`))
+    const M = K.months
+    if (!M.length) { sec.append(h('div', { class: 'card setup' }, h('p', { class: 'muted', text: 'No order history yet.' }))); return sec }
+    const R = M.map(lossRates)
+    const cur = R[R.length - 1], prev = R.length > 1 ? R[R.length - 2] : null
+    const curLbl = monthLong(M[M.length - 1].month) + ' so far'
+    const measured = !!K.disputes?.ok
+    const hold = S.dispute_threshold_pct ?? 1
+    // Dispute rate: measured from Shopify Payments when the app may read it,
+    // otherwise the rate entered in Settings.
+    const disputeNow = measured ? Math.max(cur.dispute ?? 0, prev?.dispute ?? 0) : S.dispute_rate_pct
+    const level = disputeNow == null ? null : disputeNow >= hold ? 'bad' : disputeNow >= DISPUTE_WARN ? 'warn' : 'good'
+    if (level === 'bad') sec.append(h('div', { class: 'banner bad' }, h('b', { text: `Dispute rate ${pct1(disputeNow)}: at or over Shopify's ${hold}% hold. ` }), 'Payouts can be held. Answer open disputes with evidence today and stop refund delays that turn into chargebacks.'))
+    else if (level === 'warn') sec.append(h('div', { class: 'banner' }, h('b', { text: `Dispute rate ${pct1(disputeNow)}: within ${(hold - disputeNow).toFixed(2)} points of Shopify's ${hold}% hold. ` }), 'Prioritise refund and where-is-my-order tickets older than 24 hours; slow replies are what turn into disputes.'))
+    const last12 = (k) => R.slice(-12).map((r) => r[k] ?? 0)
+    const ppDeltaEl = (a, b) => (a == null || b == null ? h('div', { class: 'delta' }, h('span', { class: 'flat', text: 'no prior month' }))
+      : h('div', { class: 'delta' }, h('span', { class: a > b ? 'down' : a < b ? 'up' : 'flat', text: `${a > b ? '▲' : a < b ? '▼' : '•'} ${Math.abs(a - b).toFixed(2)} pts` }), h('span', { class: 'muted', text: 'vs last month' })))
+    const grid = h('div', { class: 'grid' })
+    grid.append(h('div', { class: 'kpis', style: 'grid-column: span 12;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))' },
+      tile(`Refund rate · ${curLbl}`, pct1(cur.refund), null, h('div', null, ppDeltaEl(cur.refund, prev?.refund), h('div', { class: 'delta' }, h('span', { class: 'muted', text: `$ refunded ÷ sales · ${pct1(cur.refundOrders)} of orders had a refund` }))), sparkline(last12('refund'), 'var(--s4)')),
+      tile(`Exchange / replacement rate · ${curLbl}`, pct1(cur.replace), null, h('div', null, ppDeltaEl(cur.replace, prev?.replace), h('div', { class: 'delta' }, h('span', { class: 'muted', text: '$0 or replacement-tagged orders ÷ paid orders' }))), sparkline(last12('replace'), 'var(--s3)')),
+      tile(measured ? `Dispute rate · ${curLbl}` : 'Dispute rate (entered)', pct1(measured ? cur.dispute : S.dispute_rate_pct), null,
+        h('div', null, measured ? ppDeltaEl(cur.dispute, prev?.dispute) : h('div', { class: 'delta' }, h('span', { class: 'muted', text: `as of ${S.dispute_rate_at || '?'} · Settings` })),
+          h('div', { class: 'delta' }, h('span', { class: level === 'bad' ? 'down' : level === 'warn' ? 'down' : 'muted', text: `alert ${DISPUTE_WARN}% · hold ${hold}%` }))),
+        measured ? sparkline(last12('dispute'), 'var(--s2)') : null)))
+    const labels = M.map((m) => m.month)
+    const table = { headers: ['Month', 'Orders', 'Sales', 'Refunded', 'Refund rate', 'Orders refunded', 'Cancelled', 'Replacements', 'Repl. rate', 'Disputes', 'Dispute rate'],
+      rows: M.map((m, i) => [monthLong(m.month), fmtInt(m.orders), fmtMoney(m.sales), fmtMoney(m.refunded), pct1(R[i].refund), pct1(R[i].refundOrders), fmtInt(m.cancelled), fmtInt(m.replacements), pct1(R[i].replace), measured ? fmtInt(m.disputes) : '–', measured ? pct1(R[i].dispute) : '–']).reverse() }
+    const rs = [
+      { name: 'Refund rate ($)', values: R.map((r) => r.refund ?? 0), color: SERIES[3], format: pct1 },
+      { name: 'Exchange / replacement rate', values: R.map((r) => r.replace ?? 0), color: SERIES[2], format: pct1 },
+    ]
+    grid.append(chartCard('loss', 'Refunds & replacements by month', 'Recent months rise as late refunds come in', () => lineChart({ labels, series: rs, height: 220, yFormat: (v) => v.toFixed(1) + '%', xFormat: monthLabel }),
+      { span: 'c6', ...table, legend: rs.map((sr) => ({ name: sr.name, color: sr.color })) }))
+    // Disputes on their own scale, so the 0.8% and 1% lines are readable.
+    if (measured) {
+      const ds = [
+        { name: 'Dispute rate', values: R.map((r) => r.dispute ?? 0), color: SERIES[1], format: pct1 },
+        { name: `Alert ${DISPUTE_WARN}%`, values: M.map(() => DISPUTE_WARN), color: 'var(--warn)', dashed: true, format: pct1 },
+        { name: `Payout hold ${hold}%`, values: M.map(() => hold), color: 'var(--bad)', dashed: true, format: pct1 },
+      ]
+      grid.append(chartCard('disputes', 'Dispute rate by month', 'Disputes ÷ paid orders, by order month', () => lineChart({ labels, series: ds, height: 220, yFormat: (v) => v.toFixed(2) + '%', xFormat: monthLabel }),
+        { span: 'c6', ...table, legend: ds.map((sr) => ({ name: sr.name, color: sr.color })) }))
+    }
+    const notes = [
+      'Refund rate = dollars refunded ÷ sales of that month\'s orders (cancellation refunds included). Pre-shipment cancellations now refund the product only, not shipping (Calvin, 26 Oct).',
+      'Exchanges / replacements are not a Shopify field here: counted as $0 orders and orders tagged replace, exchange or reship. Tag replacement orders consistently so this stays accurate.',
+      measured ? `Disputes from Shopify Payments (${fmtInt(K.disputes.count)} in total), counted in their order's month. Shopify judges the rate over a rolling window, so treat a month near ${DISPUTE_WARN}% as a warning.`
+        : `Disputes: Shopify Payments could not be read (${K.disputes?.error || 'not synced yet'}), so the card shows the rate entered in Settings. Ask Calvin to add the read_shopify_payments_disputes permission to the Innaderm Shopify app for the monthly trend.`,
+    ]
+    grid.append(h('div', { class: measured ? 'card c12' : 'card c6' }, h('h3', { text: 'How these are counted' }), h('ul', { class: 'notes' }, notes.map((n) => h('li', { text: n })))))
+    sec.append(grid)
+    return sec
   }
 
   // ----- Panel 2: inventory on hand -----
@@ -1919,6 +2000,16 @@
         zendrop: { sheetId: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', tabs: [{ name: 'Fulfillment Issues', gid: '1279079658', open: 23, raised7: 9, resolved7: 12, oldestDays: 31, byTopic: { 'Stuck In Transit': 9, 'Unfulfilled': 7, 'Cancellation': 4, 'HOLD': 3 }, rowsInnaderm: 40, skippedOther: 0, openRows: [{ order: '#INN70312', topic: 'Stuck In Transit', ageDays: 31 }, { order: '#INN71044', topic: 'Unfulfilled', ageDays: 12 }] }, { name: 'Zendrop Order Issues', gid: '124374285', open: 11, raised7: 4, resolved7: 6, oldestDays: 19, byTopic: { 'Incomplete Shipping Address': 8, 'Customer Phone Number Needed': 3 }, rowsInnaderm: 17, skippedOther: 0, openRows: [{ order: '#INN70980', topic: 'Incomplete Shipping Address', ageDays: 19 }] }] },
         clickup: { lists: [{ id: '901222538715', name: 'Founder Escalations', total: 6, overdue: 2, unassigned: 1, byStatus: { 'to do': 4, 'in progress': 2 }, tasks: [{ id: 'a', name: 'Chargeback #IN1988 – evidence pack', status: 'in progress', url: 'https://app.clickup.com', due: new Date(Date.now() - 86400e3).toISOString(), overdue: true, assignees: ['Khethiwe'] }, { id: 'b', name: 'Pre-order button test on Serentia', status: 'to do', url: 'https://app.clickup.com', due: new Date(Date.now() + 3 * 86400e3).toISOString(), overdue: false, assignees: [] }] }, { id: '901216052461', name: 'Ops Overview', total: 14, overdue: 3, unassigned: 2, byStatus: { 'to do': 9, 'in progress': 5 }, tasks: [{ id: 'c', name: 'Weekly Zendrop reconciliation', status: 'to do', url: 'https://app.clickup.com', due: new Date(Date.now() + 86400e3).toISOString(), overdue: false, assignees: ['Khethiwe'] }] }] },
       },
+      kpi: (() => {
+        // Made-up months for the layout check only.
+        const months = []
+        for (let i = 12; i >= 0; i--) {
+          const t = new Date(); t.setUTCDate(1); t.setUTCMonth(t.getUTCMonth() - i)
+          const orders = Math.round(900 + (12 - i) * 85 + (i % 3) * 40), paid = orders - Math.round(orders * 0.02)
+          months.push({ month: t.toISOString().slice(0, 7), orders, paidOrders: paid, sales: paid * 58, refunded: paid * 58 * (0.07 - i * 0.002 + (i % 2) * 0.006), refundedOrders: Math.round(orders * 0.06), cancelled: Math.round(orders * 0.025), replacements: orders - paid, disputes: Math.round(paid * (0.0045 + (12 - i) * 0.0004)) })
+        }
+        return { sync: { complete: true, completedAt: new Date().toISOString() }, disputes: { ok: true, count: months.reduce((a, m) => a + m.disputes, 0) }, months }
+      })(),
       settings: { finished_source: 'shopify', finished_on_hand: null, packaging_on_hand: 3600, lead_finished_with_packaging: 10, lead_finished_without_packaging: 22, lead_packaging: 14, moq_finished: 2500, moq_packaging: 5000, unit_cost_finished: 4.1, unit_cost_packaging: 0.35, baseline_days: 14, scale_pct: 20, scale_days_default: 3, safety_days: 7, packaging_per_unit: 1, tracked_variant_ids: [], clickup_lists: [{ id: '901222538715', name: 'Founder Escalations' }, { id: '901216052461', name: 'Ops Overview' }], zendrop_sheet_id: '1gV5MPamT9f0AKpvVCSBevZpjlwSoKFkVbPTITUg7_kY', inbound_stock: [{ id: 'a', item: 'finished', units: 2374, status: 'in_transit', to: 'Zendrop', eta: '2026-11-03', eta_text: 'early next week', note: 'Part 1 of 3,000.', source: 'Ava on Slack' }, { id: 'b', item: 'finished', units: 626, status: 'waiting_packaging', to: 'Zendrop', eta: null, eta_text: 'next batch', note: 'Held back: not enough bags.' }, { id: 'c', item: 'packaging', units: 4000, status: 'ordered', to: 'Capsule factory', eta: '2026-11-06', eta_text: 'early November', note: 'Bags for the next batches.' }] },
       settingsMeta: {},
       viewer: { name: 'Demo viewer', role: 'admin' },
