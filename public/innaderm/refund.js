@@ -22,6 +22,7 @@
     ['90-day guarantee', 'First order only (one-time or the first order of a subscription). One email with the order number within 90 days of the carrier-confirmed delivery date is the whole process: no minimum use, no reason, no replacement first.'],
     ['Conditions (all five)', 'First order · within 90 days of carrier delivery · bought on innaderm.com · no earlier guarantee refund to that person, household, address or card · no chargeback or dispute on the order.'],
     ['What is refunded', 'The product price of the first order. Never shipping, handling, expedited or priority fees. Gift cards are not refundable.'],
+    ['Cancel before shipping', 'Cancel the order and refund the product price. Shipping is not refunded (Calvin, 26 Oct 2026).'],
     ['Returns', 'Keep what is left. Returns are not required and will not be accepted.'],
     ['After a guarantee refund', 'Any subscription tied to that order is cancelled. Future orders from that customer, household, address or card are not covered.'],
     ['Not eligible', 'After 90 days · any order after the first (renewals, repeat purchases) · renewal charges, incl. ones not cancelled 48 h before billing · anyone already refunded under the guarantee · orders with a chargeback · unauthorised resellers.'],
@@ -35,7 +36,7 @@
   ]
 
   const ROWS = [
-    { id: 'R1', title: 'Not shipped yet, asks to cancel', policy: 'Cancellation Policy page (not reviewed yet).', team: 'Same day: hold it in Shopify/Zendrop, then cancel + full refund (nothing shipped, so shipping too). One retention line allowed. Never answer a pre-shipment cancel after it ships.', calvin: 'It shipped before we saw the request.' },
+    { id: 'R1', title: 'Not shipped yet, asks to cancel', policy: 'Cancellation Policy page (not reviewed yet).', team: 'Same day: hold it in Shopify/Zendrop, then cancel and refund the product price, not shipping (Calvin, 26 Oct). One retention line allowed. Never answer a pre-shipment cancel after it ships.', calvin: 'It shipped before we saw the request.' },
     { id: 'R2', title: 'In transit, slower than estimated', policy: 'Lost/undelivered: carrier investigation; replacement only if confirmed lost.', team: 'Tracking + honest ETA. No cancel, no partial refund. WELCOME15 as an apology is fine. First order: the 90-day guarantee starts on delivery. Past the estimate with no movement: open a carrier investigation (R3).', calvin: 'Customer insists on money back for a parcel still moving.' },
     { id: 'R3', title: 'Lost (carrier confirms, returned to sender, long customs hold)', policy: 'Claim within 30 days of ship date; carrier investigation; free replacement if confirmed lost.', team: 'Open the investigation with Zendrop the same day. Confirmed lost: free replacement. Not a refund, not both.', calvin: 'Customer refuses a replacement and wants money back. Claim over 30 days after shipping.' },
     { id: 'R4', title: 'Marked delivered, not found', policy: 'Delivered to the address given = not eligible.', team: 'Ask them to check neighbours, mailroom, household. Request proof of delivery from Zendrop. POD at their address: decline kindly, share the photo, WELCOME15.', calvin: 'POD photo/GPS shows a different address or door. Repeat "not received" claims.' },
@@ -66,8 +67,12 @@
   const DECISIONS = [
     'Apply the published policy without asking Calvin each time (guarantee refunds, replacements, cancellations)?',
     'Refund ceiling above which he still sees it ($80 suggested).',
-    'Goodwill beyond the policy: stop it, except later-order reactions and unshipped forgotten renewals, which go to him case by case?',
-    'Pre-shipment cancels: full refund including shipping (confirm against the Cancellation Policy page).',
+  ]
+
+  // Settled on the 26 Oct call with Calvin.
+  const DECIDED = [
+    'Pre-shipment cancellations: cancel and refund the product price only; shipping is not refunded.',
+    'Goodwill, case by case, to keep the customer: offer a 50% partial refund or a 10% discount instead of a full refund. Anything beyond that goes to Calvin.',
   ]
 
   const LIMIT = 80
@@ -200,7 +205,7 @@
     const sign = '\n\nWarm regards,\n{agent}'
     const timeline = 'You\'ll see it on your original payment method within 3-7 business days, and your bank may take another 3-5 business days to post it.'
     const T = {
-      R1: B(`check zendrop it has not shipped, cancel ${ord} in shopify with a full refund`) + `Hi ${name},\n\nThank you for letting us know. I've cancelled your order ${ord} before it shipped and refunded it in full. ${timeline}\n\nIf you ever want to give InnaDerm another try, just reply here and I'll help you get started.` + sign,
+      R1: B(`check zendrop it has not shipped, cancel ${ord} in shopify and refund the product price only, not shipping, and add the amount below`) + `Hi ${name},\n\nThank you for letting us know. I've cancelled your order ${ord} before it shipped and refunded the product price of [AMOUNT]. The shipping charge isn't refundable, so it isn't included. ${timeline}\n\nIf you ever want to give InnaDerm another try, just reply here and I'll help you get started.` + sign,
       R2: `Hi ${name},\n\nI'm sorry it's taking longer than expected. ${v.order_status || ''}\n\nOnce a parcel is with the carrier we can't recall it, but it is on its way to you. If it hasn't moved by [DATE], reply here and I'll open a carrier investigation straight away.${'\n\n'}Your 90-day money-back guarantee only starts on the day it's delivered, so you don't lose any of it while you wait. As a thank-you for your patience, here's ${code} for 15% off your next order.` + sign,
       R3: B('open the carrier investigation with zendrop and add the date below') + `Hi ${name},\n\nI'm sorry your parcel hasn't arrived. I've opened an investigation with the carrier for ${ord}, which usually takes [NUMBER] business days. If they confirm it's lost, we'll send you a free replacement straight away, and I'll email you the new tracking number the day it ships.` + sign,
       R4: B('request proof of delivery from zendrop first') + `Hi ${name},\n\nI'm sorry you haven't been able to find your parcel. ${v.order_status || ''}\n\nCould you check with neighbours, your mailroom or anyone in your household who might have picked it up? Parcels sometimes turn up a day or two after they're marked delivered. In the meantime I've asked the carrier for the proof of delivery, and I'll share it with you as soon as I have it.` + sign,
@@ -223,5 +228,5 @@
     return T[row] || ''
   }
 
-  window.InnRefund = { STATUS, POLICY, ROWS, ALWAYS_CALVIN, DECISIONS, LIMIT, assess }
+  window.InnRefund = { STATUS, POLICY, ROWS, ALWAYS_CALVIN, DECISIONS, DECIDED, LIMIT, assess }
 })()

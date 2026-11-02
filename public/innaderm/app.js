@@ -1928,7 +1928,9 @@
       h('div', { style: 'overflow:auto' }, tbl)))
     wrap.append(h('div', { class: 'grid2', style: 'margin-top:16px' },
       h('div', { class: 'card' }, h('h2', { text: 'Always send to Calvin' }), h('ul', null, R.ALWAYS_CALVIN.map((x) => h('li', { text: x })))),
-      h('div', { class: 'card' }, h('h2', { text: R.STATUS.approved ? 'Decided' : 'Waiting on Calvin' }), h('ol', null, R.DECISIONS.map((x) => h('li', { text: x }))))))
+      h('div', { class: 'card' }, h('h2', { text: R.STATUS.approved ? 'Decided' : 'Waiting on Calvin' }), h('ol', null, R.DECISIONS.map((x) => h('li', { text: x }))),
+        (R.DECIDED || []).length ? h('h3', { style: 'margin-top:12px', text: 'Decided by Calvin, 26 Oct' }) : null,
+        (R.DECIDED || []).length ? h('ul', { class: 'notes' }, R.DECIDED.map((x) => h('li', { text: x }))) : null)))
     wrap.append(h('p', { class: 'muted', style: 'margin-top:12px;font-size:11.5px', text: 'Built from the published policy and 116 past refund cases in support@innaderm.com (2 Jun to 24 Oct 2026). Suggestions only: nothing here refunds, cancels or sends anything. A person does the action, checks it happened, then sends.' }))
     if (state.matrixRow) setTimeout(() => { const el = document.getElementById('m-' + state.matrixRow); if (el) el.scrollIntoView({ block: 'center' }); state.matrixRow = null }, 50)
     return wrap
