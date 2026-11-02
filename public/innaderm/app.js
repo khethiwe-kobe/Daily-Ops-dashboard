@@ -198,10 +198,13 @@
     }
     return out
   }
-  function daysOfCover(onHand, curve) {
+  // `arrivals` are pending batches ({ day, units }): units become sellable on
+  // that day, so cover is the first day stock actually runs out.
+  function daysOfCover(onHand, curve, arrivals = []) {
     if (onHand == null) return null
     let left = onHand
     for (let i = 0; i < curve.length; i++) {
+      for (const a of arrivals) if (a.day === i + 1) left += a.units || 0
       if (curve[i] <= 0) continue
       if (left <= curve[i]) return i + left / curve[i]
       left -= curve[i]
@@ -228,8 +231,12 @@
     // divides by demand is withheld instead of showing the horizon.
     const sellPerDay = sum(base, 30) / 30
     const noSales = !!d.runRate && !(sellPerDay > 0)
-    const coverF = noSales ? null : daysOfCover(finished, curve)
-    const coverF0 = noSales ? null : daysOfCover(finished, base)
+    // Pending finished goods with a date (given or estimated from the bags'
+    // ETA) count from the day they land, as in the stock plan below, so the
+    // headline and the plan agree.
+    const pending = finished == null ? [] : planArrivals(d).finished.filter((x) => x.day != null)
+    const coverF = noSales ? null : daysOfCover(finished, curve, pending)
+    const coverF0 = noSales ? null : daysOfCover(finished, base, pending)
     const coverP = noSales || packaging == null || !perUnit ? null : daysOfCover(packaging / perUnit, curve)
     const capped = coverF != null && coverF >= HORIZON
 
@@ -242,7 +249,8 @@
     const packagingOk = packaging != null && perUnit > 0 && (packaging / perUnit) >= 0.8 * sum(base, 30)
     const leadF = packagingOk ? S.lead_finished_with_packaging : S.lead_finished_without_packaging
     const horizonF = Math.ceil(leadF + 30 + safety)
-    let orderFinished = Math.max(0, Math.ceil(sum(curve, horizonF) - (finished ?? 0)))
+    const landing = pending.filter((x) => x.day <= horizonF).reduce((a, x) => a + (x.units || 0), 0)
+    let orderFinished = Math.max(0, Math.ceil(sum(curve, horizonF) - (finished ?? 0) - landing))
     if (S.moq_finished) orderFinished = orderFinished > 0 ? Math.max(S.moq_finished, orderFinished) : 0
     let orderPackaging = packaging == null ? null : Math.max(0, Math.ceil(orderFinished * perUnit + sum(curve, leadP ? leadP + safety : 30) * perUnit - packaging))
     if (orderPackaging != null && S.moq_packaging) orderPackaging = orderPackaging > 0 ? Math.max(S.moq_packaging, orderPackaging) : 0
@@ -279,8 +287,9 @@
     let maxN = null
     if (finished != null && d.runRate && !noSales) {
       maxN = 0
-      for (let n = 0; n <= MAX_SCALE; n++) { if (daysOfCover(finished, demandCurve(d, n)) >= leadF + safety) maxN = n; else break }
+      for (let n = 0; n <= MAX_SCALE; n++) { if (daysOfCover(finished, demandCurve(d, n), pending) >= leadF + safety) maxN = n; else break }
     }
+    if (pending.length && verdict !== 'unknown') reason += ` Counts ${pending.map((x) => `${fmtInt(x.units)} ${x.estimated ? 'estimated ' : ''}arriving ${fmtDate(new Date(x.eta + 'T00:00:00'))}`).join(' and ')}.`
     const maxNLabel = maxN == null ? null : `${maxN}${maxN === MAX_SCALE ? '+' : ''} day${maxN === 1 ? '' : 's'}`
     const stockout = coverF == null || capped ? null : addDays(coverF)
     const coverLabel = coverF == null ? '–' : capped ? `${HORIZON}+` : fmt1(coverF)
@@ -881,7 +890,7 @@
     if (dec.verdict === 'no') sug.push({ cls: 'bad', ic: '!', t: `Do not scale ${state.scaleDays} days right now.`, s: dec.maxN != null && dec.maxN > 0 ? `Up to ${dec.maxNLabel} is safe. Re-check after the next batch lands.` : 'Place the finished-goods order first.' })
     if (dec.verdict === 'yes' && dec.maxN != null) sug.push({ cls: 'good', ic: '✓', t: `Scaling ${state.scaleDays} days is covered.`, s: dec.maxN === MAX_SCALE ? `Stock covers at least ${MAX_SCALE} days of scaling.` : `Longest safe run is ${dec.maxNLabel}. Beyond that, stock runs out before a reorder could land.` })
     const inbS = inboundSummary(S)
-    if (inbS.finished) sug.push({ cls: 'warn', ic: 'I', t: `${fmtInt(inbS.finished)} finished units are already on the way (not in Shopify yet).`, s: 'The suggestions below do not count them. Check the inbound list before placing another order.' })
+    if (inbS.finished) sug.push({ cls: 'warn', ic: 'I', t: `${fmtInt(inbS.finished)} finished units are already on the way (not in Shopify yet).`, s: 'Batches with a date (or an estimate from the bags\' ETA) are counted from the day they land; batches with no date are not. Mark a batch received once it shows in Shopify, or it is counted twice.' })
     if (inbS.packaging) sug.push({ cls: '', ic: 'I', t: `${fmtInt(inbS.packaging)} bags are on the way to the capsule factory.`, s: 'Not counted in packaging on hand until they arrive and are counted.' })
     if (dec.orderFinished > 0 && dec.orderFinishedBy) sug.push({ cls: daysTo(dec.orderFinishedBy) <= 7 ? 'warn' : '', ic: 'F', t: `Order ${fmtInt(dec.orderFinished)} finished units by ${fmtDateLong(dec.orderFinishedBy)}${daysTo(dec.orderFinishedBy) < 0 ? ' (overdue)' : ''}.`, s: `Covers the ${dec.leadF}-day lead time plus 30 days plus ${dec.safety} days safety under the current scenario${S.moq_finished ? ', rounded up to the ' + fmtInt(S.moq_finished) + ' MOQ' : ''}${S.unit_cost_finished ? ' · ~' + fmtMoney(dec.orderFinished * S.unit_cost_finished) : ''}.` })
     if (dec.orderPackaging != null && dec.orderPackaging > 0) sug.push({ cls: dec.orderPackagingBy && daysTo(dec.orderPackagingBy) <= 7 ? 'warn' : '', ic: 'P', t: `Order ${fmtInt(dec.orderPackaging)} packaging units${dec.orderPackagingBy ? ' by ' + fmtDateLong(dec.orderPackagingBy) : ''}.`, s: `Enough for the next finished-goods batch plus packaging lead time${S.moq_packaging ? ', rounded up to the ' + fmtInt(S.moq_packaging) + ' MOQ' : ''}. Packaging on hand is what keeps the finished-goods lead time at ${S.lead_finished_with_packaging} days instead of ${S.lead_finished_without_packaging}.` })
