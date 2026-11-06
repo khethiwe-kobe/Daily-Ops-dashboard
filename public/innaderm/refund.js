@@ -4,8 +4,8 @@
    Source: the published refund policy (innaderm.com/policies/refund-policy,
    last updated 17 Sep 2026) and the draft matrix in the Serentia KB
    (knowledge-base/15-innaderm-refund-matrix.md), built from 116 past refund
-   cases. The policy wins wherever they differ. Calvin has not signed the
-   matrix off yet: STATUS below says so on screen.
+   cases. The policy wins wherever they differ. Calvin approved the matrix
+   on 6 Nov 2026: STATUS below says so on screen.
 
    assess(ticket) only ever suggests. It never refunds, cancels or sends:
    a person does the action, checks it happened, then sends the reply. */
@@ -13,9 +13,10 @@
   'use strict'
 
   const STATUS = {
-    approved: false,
+    approved: true,
+    approvedOn: '6 Nov 2026',
     policyUpdated: '17 Sep 2026',
-    note: 'Calvin has not approved the matrix yet. Until he does, every refund still needs his OK (handover, 4 Oct); the published policy answers are safe to quote.',
+    note: 'Approved by Calvin on 6 Nov 2026. Apply the published policy without asking him each time; only the "Always send to Calvin" cases and anything over the $80 limit go to him.',
   }
 
   const POLICY = [
@@ -56,7 +57,7 @@
   ]
 
   const ALWAYS_CALVIN = [
-    'Refund total for the customer over $80 in the last 90 days (limit pending Calvin)',
+    'Refund total for the customer over $80 in the last 90 days (limit approved 6 Nov 2026)',
     'Legal threat, lawyer, regulator, attorney general, BBB',
     'Severe reaction or anything medical beyond a mild rash or allergy',
     'Fraud, an unrecognised order, a filed dispute, or a fair-use red flag',
@@ -64,9 +65,12 @@
     'The customer has rejected the policy answer twice',
   ]
 
+  // Approved by Calvin, 6 Nov 2026 (the four questions in the KB matrix, section 4).
   const DECISIONS = [
-    'Apply the published policy without asking Calvin each time (guarantee refunds, replacements, cancellations)?',
-    'Refund ceiling above which he still sees it ($80 suggested).',
+    'Apply the published policy without asking Calvin each time: guarantee refunds (R8), replacements (R3, R5) and cancellations (R1, R9) go ahead whenever the conditions check out.',
+    'Refund ceiling: $80 per customer per 90 days. Above that, Calvin still sees it before the refund.',
+    'No goodwill beyond the policy. The exceptions named in the matrix (repeat-order reactions, our own errors) go to Calvin.',
+    'Pre-shipment cancellations: cancel and refund the product price only; shipping is not refunded.',
   ]
 
   // Settled on the 26 Oct call with Calvin.
@@ -117,7 +121,12 @@
     const flags = t.flags || []
     if (RX.filed.test(text)) return 'R13'
     if (RX.fraud.test(text)) return 'R15'
-    if (t.category === 'Adverse reaction' || flags.includes('reaction') || RX.reaction.test(text)) return 'R7'
+    // R7 needs reaction words in the email itself. A category or flag set by
+    // hand is not enough on its own: a plain "cancel my subscription" thread
+    // tagged as a reaction must still be treated as the cancel it is (R9).
+    const reactionText = RX.reaction.test(text)
+    const plainCancel = RX.cancel.test(text) && !/refund|money back/.test(text) && !reactionText
+    if (reactionText || ((t.category === 'Adverse reaction' || flags.includes('reaction')) && !plainCancel)) return 'R7'
     if (RX.double.test(text)) return 'R14'
     if (t.category === 'Damaged / wrong / missing item' || (RX.damaged.test(text) && stage(o) === 'delivered')) return 'R5'
     if (t.category === 'Marked delivered, not received' || RX.notFound.test(text)) return 'R4'
