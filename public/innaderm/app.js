@@ -1374,16 +1374,22 @@
 
   // ---------- Support board (work the Innaderm inbox, like the Serentia board) ----------
   const LS_SIGNER = 'innaderm.signer'
+  // Khethiwe, 6 Nov 2026: every pause/cancel escalation goes to her in ClickUp;
+  // she assigns Calvin herself when needed. Mirrors isCancellation() in lib/innaderm/csboard.js.
+  const ESCALATED = ['With Calvin', 'With Khethiwe']
+  const CANCEL_REASON = 'Pause or cancel subscription (Loop)'
+  const escalationTarget = (reason, category) => (reason === CANCEL_REASON || (category === 'Cancel order' && !['Adverse reaction', 'Chargeback or dispute'].includes(reason)) ? 'Khethiwe' : 'Calvin')
+  const escalatedTo = (t) => (t.clickup?.assignees?.length ? t.clickup.assignees.join(', ') : t.status === 'With Khethiwe' ? 'Khethiwe' : 'Calvin')
   const QUEUES = [
-    ['reply', 'Needs reply', (t) => t.needsReply && t.status !== 'With Calvin'],
+    ['reply', 'Needs reply', (t) => t.needsReply && !ESCALATED.includes(t.status)],
     ['back', 'They replied', (t) => t.needsReply && (t.reopened || (t.msgsOut > 0 && t.statusSet))],
-    ['calvin', 'With Calvin', (t) => t.status === 'With Calvin'],
+    ['calvin', 'Escalated', (t) => ESCALATED.includes(t.status)],
     ['drafted', 'Drafted', (t) => t.status === 'Drafted'],
     ['waiting', 'Waiting on customer', (t) => !t.needsReply && ['Replied', 'Waiting on customer', 'With Zendrop'].includes(t.status)],
     ['open', 'All open', (t) => t.needsReply || !['Done', 'Skip'].includes(t.status)],
     ['done', 'Done', (t) => ['Done', 'Skip'].includes(t.status) && !t.reopened],
   ]
-  const STATUS_CLS = { New: '', Drafted: 'warn', Replied: 'good', 'Waiting on customer': '', 'With Calvin': 'bad', 'With Zendrop': 'warn', Done: 'good', Skip: '' }
+  const STATUS_CLS = { New: '', Drafted: 'warn', Replied: 'good', 'Waiting on customer': '', 'With Calvin': 'bad', 'With Khethiwe': 'bad', 'With Zendrop': 'warn', Done: 'good', Skip: '' }
   const PLACEHOLDER_RE = /\[[A-Z][A-Z0-9 ,.:;'’()/&+-]{2,}\]/g
 
   function signer() {
@@ -1437,7 +1443,7 @@
   function ticketsView(b) {
     const qKey = state.boardQueue || 'reply'
     const counts = Object.fromEntries(QUEUES.map(([k, , f]) => [k, b.tickets.filter(f).length]))
-    const calvinNew = b.tickets.filter((t) => t.status === 'With Calvin' && t.clickup?.calvinReplied).length
+    const calvinNew = b.tickets.filter((t) => ESCALATED.includes(t.status) && t.clickup?.calvinReplied).length
     const frag = h('div')
     frag.append(h('div', { class: 'queues' }, QUEUES.map(([k, l]) => h('button', { class: 'q' + (k === qKey ? ' on' : ''), onclick: () => { state.boardQueue = k; state.openTicket = null; render() } },
       l, h('b', { text: fmtInt(counts[k]) }), k === 'calvin' && calvinNew ? h('span', { class: 'tag good', text: `${calvinNew} answered` }) : null)),
@@ -1503,7 +1509,7 @@
         t.orders?.[0] ? tag(t.orders[0].name) : null,
         lastDraft && lastDraft.status === 'created' && lastDraft.stale ? h('span', { class: 'tag bad', title: lastDraft.stale, text: 'Draft out of date' }) :
         lastDraft && lastDraft.action === 'send' && ['pending', 'claimed'].includes(lastDraft.status) ? tag('Sending…', 'warn') : lastDraft && lastDraft.action === 'send' && lastDraft.status === 'sent' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag(lastDraft.source === 'auto' ? 'Auto-sent' : 'Reply sent', 'good') : lastDraft && ['pending', 'claimed'].includes(lastDraft.status) ? tag('Draft → Gmail…', 'warn') : lastDraft && lastDraft.status === 'created' && new Date(lastDraft.at) >= new Date(t.lastIn) ? tag(lastDraft.source === 'auto' ? 'Auto-draft in Gmail' : 'Draft in Gmail', 'good') : null,
-        t.clickup ? tag(t.clickup.calvinReplied ? 'Calvin answered' : 'With Calvin', t.clickup.calvinReplied ? 'good' : 'bad') : null),
+        t.clickup ? tag(t.clickup.calvinReplied ? 'Answered' : 'With ' + escalatedTo(t), t.clickup.calvinReplied ? 'good' : 'bad') : null),
       h('span', { class: 'st tag ' + (STATUS_CLS[t.status] || ''), text: t.status })))
     if (open) row.append(ticketDetail(t, b))
     return row
@@ -1603,31 +1609,39 @@
   function calvinBox(t, b, ra) {
     const box = h('div', { class: 'calvin' })
     if (t.clickup) {
-      box.append(h('div', { class: 'lbl' }, 'With Calvin in ClickUp ', h('a', { href: t.clickup.url, target: '_blank', rel: 'noopener', text: 'Open task' }), t.clickup.status ? ` · ${t.clickup.status}` : ''))
+      box.append(h('div', { class: 'lbl' }, `With ${escalatedTo(t)} in ClickUp `, h('a', { href: t.clickup.url, target: '_blank', rel: 'noopener', text: 'Open task' }), t.clickup.status ? ` · ${t.clickup.status}` : ''))
       if (t.clickup.error) box.append(h('p', { class: 'muted', text: 'Could not read the task: ' + t.clickup.error }))
       for (const cm of t.clickup.comments || []) box.append(h('div', { class: 'cmt' + (cm.fromCalvin ? ' calvin' : '') }, h('b', { text: cm.by + ' ' }), h('span', { class: 'muted', text: agoTxt(cm.at) }), h('p', { text: cm.text })))
-      if (!(t.clickup.comments || []).length) box.append(h('p', { class: 'muted', style: 'margin:4px 0', text: 'No reply from Calvin yet.' }))
+      if (!(t.clickup.comments || []).length) box.append(h('p', { class: 'muted', style: 'margin:4px 0', text: `No reply from ${escalatedTo(t)} yet.` }))
       return box
     }
     if (!state.escalating || state.escalating !== t.id) {
-      box.append(h('button', { class: 'btn ghost sm', text: 'Send to Calvin', title: b.clickupReady ? 'Creates a task in ClickUp Founder Escalations' : 'Needs INNADERM_CLICKUP_TOKEN in Vercel', disabled: !b.clickupReady && !DEMO, onclick: () => { state.escalating = t.id; render() } }),
-        b.clickupReady || DEMO ? h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Refunds, pausing subscriptions in Loop, anything you are unsure of.' }) : h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Add INNADERM_CLICKUP_TOKEN in Vercel to turn this on.' }))
+      box.append(h('button', { class: 'btn ghost sm', text: 'Escalate', title: b.clickupReady ? 'Creates a task in ClickUp Founder Escalations' : 'Needs INNADERM_CLICKUP_TOKEN in Vercel', disabled: !b.clickupReady && !DEMO, onclick: () => { state.escalating = t.id; render() } }),
+        b.clickupReady || DEMO ? h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Pauses and cancellations go to Khethiwe. Refunds over the limit, reactions, disputes and anything else go to Calvin.' }) : h('span', { class: 'muted', style: 'font-size:11.5px;margin-left:8px', text: 'Add INNADERM_CLICKUP_TOKEN in Vercel to turn this on.' }))
       return box
     }
-    const preReason = ra?.escalate ? (ra.row === 'R7' ? 'Adverse reaction' : ['R12', 'R13'].includes(ra.row) ? 'Chargeback or dispute' : ['R3', 'R4', 'R5'].includes(ra.row) ? 'Replacement / reship' : 'Refund approval') : null
-    const reason = h('select', null, ['Refund approval', 'Pause or cancel subscription (Loop)', 'Replacement / reship', 'Adverse reaction', 'Chargeback or dispute', 'Not sure how to answer', 'Other'].map((r) => h('option', { value: r, text: r, selected: preReason ? r === preReason : (r === 'Adverse reaction' && t.flags.includes('reaction')) || (r === 'Chargeback or dispute' && t.flags.includes('chargeback')) })))
-    const question = h('textarea', { rows: 3, placeholder: 'What do you need Calvin to decide or do? e.g. "Approve a refund of the 1-pack ($59.99)?" or "Please pause her subscription in Loop."' }, ra?.escalate ? `Refund matrix ${ra.row} (${ra.def.title}). ${ra.escalate}. Recommended: ${ra.decision}${ra.order ? ` Order ${ra.order.name}, $${ra.order.total.toFixed(2)} incl. shipping.` : ''}` : '')
+    const preReason = ['R1', 'R9'].includes(ra?.row) && !ra?.escalate ? CANCEL_REASON : ra?.escalate ? (ra.row === 'R7' ? 'Adverse reaction' : ['R12', 'R13'].includes(ra.row) ? 'Chargeback or dispute' : ['R3', 'R4', 'R5'].includes(ra.row) ? 'Replacement / reship' : 'Refund approval') : null
+    const reason = h('select', { onchange: () => syncTarget() }, ['Refund approval', 'Pause or cancel subscription (Loop)', 'Replacement / reship', 'Adverse reaction', 'Chargeback or dispute', 'Not sure how to answer', 'Other'].map((r) => h('option', { value: r, text: r, selected: preReason ? r === preReason : (r === 'Adverse reaction' && t.flags.includes('reaction')) || (r === 'Chargeback or dispute' && t.flags.includes('chargeback')) })))
+    const question = h('textarea', { rows: 3, placeholder: 'What do you need decided or done? e.g. "Approve a refund of the 1-pack ($59.99)?" or "Please cancel her subscription in Loop: reason \'only wanted one order\'."' }, ra?.escalate ? `Refund matrix ${ra.row} (${ra.def.title}). ${ra.escalate}. Recommended: ${ra.decision}${ra.order ? ` Order ${ra.order.name}, $${ra.order.total.toFixed(2)} incl. shipping.` : ''}` : '')
     const position = h('input', { type: 'text', placeholder: 'What the customer wants (optional)' })
     const msg = h('span', { class: 'msg' })
-    const go = h('button', { class: 'btn sm', text: 'Create ClickUp task for Calvin', onclick: async () => {
+    const head = h('div', { class: 'lbl' })
+    const go = h('button', { class: 'btn sm', onclick: async () => {
       go.disabled = true; msg.textContent = 'Creating…'
       try {
         const r = DEMO ? { task: { id: 'demo', url: 'https://app.clickup.com' } } : await api('/cs/board/escalate', { method: 'POST', body: { id: t.id, reason: reason.value, question: question.value, customerPosition: position.value } })
-        t.clickup = { id: r.task.id, url: r.task.url, status: 'new ticket', comments: [] }; t.status = 'With Calvin'; t.statusSet = true
+        const to = r.to || escalationTarget(reason.value, t.category)
+        t.clickup = { id: r.task.id, url: r.task.url, status: 'new ticket', comments: [], assignees: [to] }; t.status = 'With ' + to; t.statusSet = true
         state.escalating = null; render()
       } catch (e) { msg.textContent = e.message; go.disabled = false }
     } })
-    box.append(h('div', { class: 'esc' }, h('div', { class: 'lbl', text: 'Send to Calvin (ClickUp Founder Escalations)' }), reason, question, position,
+    function syncTarget() {
+      const to = escalationTarget(reason.value, t.category)
+      head.textContent = `Escalate to ${to} (ClickUp Founder Escalations)`
+      go.textContent = `Create ClickUp task for ${to}`
+    }
+    syncTarget()
+    box.append(h('div', { class: 'esc' }, head, reason, question, position,
       h('div', { class: 'actions' }, go, h('button', { class: 'btn ghost sm', text: 'Cancel', onclick: () => { state.escalating = null; render() } }), msg)))
     return box
   }
@@ -1974,7 +1988,7 @@
     const stagesDemo = [{ key: 'manual', label: 'Manual', save: 0, help: 'Written from scratch each time.' }, { key: 'template', label: 'Approved template', save: 0.4, help: 'Agent picks the template; name, order and tracking fill in.' }, { key: 'autodraft', label: 'Auto-drafted in Gmail', save: 0.7, help: 'A filled draft is waiting in the Gmail thread when the ticket arrives. Agent checks and sends.' }, { key: 'autosend', label: 'Auto-send', save: 0.95, help: 'Sent without a person. Only Where is my order, after a test run of auto-drafts; anything the rules cannot answer for certain is still drafted.' }]
     const stageOf = { 'Where is my order': 'autodraft', Subscription: 'template' }
     const automation = cats.map((c) => { const st = stagesDemo.find((s) => s.key === (stageOf[c] || 'manual')); const tpl = tplDemo.find((x) => x.key === defaults[c]); return { category: c, potential: never.has(c) ? 'never' : ['Not working / results', 'Other'].includes(c) ? 'low' : 'high', play: '', stage: st.key, stageSince: st.key !== 'manual' ? ago(24 * 6) : null, owner: st.key !== 'manual' ? 'Khethiwe' : '', nextStep: c === 'Subscription' ? 'Approve wording with Calvin, then auto-draft' : '', perWeek: pw[c], hoursPerWeek: (pw[c] * 6) / 60, savedHoursPerWeek: (pw[c] * 6 * st.save) / 60, template: tpl ? { key: tpl.key, title: tpl.title, approved: tpl.approved } : null, draftsAgent28: st.key === 'template' ? 41 : 3, draftsAuto28: st.key === 'autodraft' ? 166 : 0, tickets28: pw[c] * 4 } })
-    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
+    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Khethiwe', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
   }
 
   // ---------- demo data (layout check without secrets: /innaderm?demo=1) ----------
