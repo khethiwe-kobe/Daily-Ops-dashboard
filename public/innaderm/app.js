@@ -1162,6 +1162,31 @@
   const FLAG_LABEL = { chargeback: 'Chargeback', legal: 'Legal / BBB', reaction: 'Reaction', angry: 'Angry' }
   const AUTO_LABEL = { high: 'Automate', medium: 'Macro + check', low: 'Human', never: 'Never automate' }
   function tag(text, cls = '') { return h('span', { class: 'tag ' + cls, text }) }
+  // Loop subscription state on each ticket (Subscribed / Paused / Cancelled).
+  const SUB_CLS = { Subscribed: 'good', Paused: 'warn', Cancelled: 'bad' }
+  const subWhen = (e) => (e ? new Date(e * (e < 1e12 ? 1000 : 1)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : null)
+  function subTag(t) {
+    const s = t.subscription
+    if (!s) return null
+    if (s.source === 'orders') return h('span', { class: 'tag', title: 'Has subscription orders. Connect Loop (INNADERM_LOOP_TOKEN) to see if it is active, paused or cancelled.', text: 'Subscriber?' })
+    if (s.error) return h('span', { class: 'tag', title: 'Could not check Loop: ' + s.error, text: 'Sub: ?' })
+    if (!s.subs.length) return null
+    const top = s.subs[0]
+    const extra = top.status === 'ACTIVE' && top.next ? ` · bills ${subWhen(top.next)}` : top.status === 'PAUSED' && top.pausedUntil ? ` · until ${subWhen(top.pausedUntil)}` : ''
+    return h('span', { class: 'tag ' + (SUB_CLS[s.state] || ''), title: s.subs.length > 1 ? `${s.subs.length} subscriptions in Loop` : 'From Loop', text: s.state + extra })
+  }
+  function subDetail(t, b) {
+    const s = t.subscription
+    if (!s) return h('p', { class: 'muted', style: 'margin:4px 0', text: b.loopReady ? 'No subscription in Loop for this email.' : 'No subscription orders. (Loop not connected, so this only checks orders.)' })
+    if (s.source === 'orders') return h('p', { class: 'muted', style: 'margin:4px 0', text: 'Has subscription orders, but Loop is not connected, so active / paused / cancelled can\'t be shown. Check Loop before replying, or add INNADERM_LOOP_TOKEN in Vercel.' })
+    if (s.error) return h('p', { class: 'muted', style: 'margin:4px 0', text: `Could not check Loop (${s.error}). Check Loop before replying.` })
+    if (!s.subs.length) return h('p', { class: 'muted', style: 'margin:4px 0', text: 'No subscription in Loop for this email.' })
+    return h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin:4px 0' }, s.subs.map((x) => {
+      const state = { ACTIVE: 'Subscribed', PAUSED: 'Paused', CANCELLED: 'Cancelled', EXPIRED: 'Cancelled' }[x.status] || x.status
+      const when = x.status === 'ACTIVE' && x.next ? `, next billing ${subWhen(x.next)}` : x.status === 'PAUSED' && x.pausedUntil ? ` until ${subWhen(x.pausedUntil)}` : x.cancelledAt ? ` ${subWhen(x.cancelledAt)}` : ''
+      return h('span', { class: 'tag ' + (SUB_CLS[state] || ''), text: `${state}${when}${x.id ? ` · #${x.id}` : ''}` })
+    }))
+  }
   function ppDelta(cur, prev, upGood = false) {
     if (prev == null || cur == null) return h('span', { class: 'muted', text: 'new' })
     const d = Math.round(cur - prev)
@@ -1504,6 +1529,7 @@
       h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown', title: t.customerEmail || '' }), t.vip ? tag('VIP', 'warn') : null),
       h('span', { class: 'subj' }, h('span', { class: 's', text: t.subject }), h('span', { class: 'when', title: `First contact ${fmtStamp(t.firstIn)}`, text: fmtStamp(t.lastIn) })),
       h('span', { class: 'tags' },
+        subTag(t),
         t.reopened ? tag('Replied again', 'bad') : null,
         t.flags.map((x) => tag(FLAG_LABEL[x] || x, 'bad')),
         t.orders?.[0] ? tag(t.orders[0].name) : null,
@@ -1535,6 +1561,8 @@
         h('td', { text: o.deliveredAt ? `Delivered ${fmtDate(o.deliveredAt)}` : o.fulfilledAt ? `Shipped ${fmtDate(o.fulfilledAt)}` : (o.status || 'unfulfilled').replace(/_/g, ' ').toLowerCase() }),
         h('td', null, o.trackingNumber ? h('a', { href: o.trackingUrl || `https://t.17track.net/en#nums=${encodeURIComponent(o.trackingNumber)}`, target: '_blank', rel: 'noopener', text: `${o.carrier ? o.carrier + ' ' : ''}${o.trackingNumber}` }) : '–'),
         h('td', { class: 'num', text: '$' + o.total.toFixed(2) })))))) : h('p', { class: 'muted', style: 'margin:4px 0', text: b.shopifyReady ? 'No order found for this email or order number. Ask for their #INN number.' : 'Shopify not connected yet: order details appear once the Shopify keys are in.' }))
+    left.append(h('div', { class: 'lbl', style: 'margin-top:12px', text: 'Subscription (Loop)' }))
+    left.append(subDetail(t, b))
     // Working state
     left.append(h('div', { class: 'work' },
       h('label', null, 'Status ', h('select', { onchange: (e) => saveTicket(t, { status: e.target.value }) }, b.statuses.map((s) => h('option', { value: s, selected: s === t.status, text: s })))),
@@ -1961,9 +1989,9 @@
     })
     const ord = (name, o) => ({ name, createdAt: ago(240), cancelledAt: null, financial: 'PAID', status: 'FULFILLED', total: 59.99, subscription: false, fulfilledAt: ago(150), deliveredAt: null, carrier: 'USPS', trackingNumber: '9400111899223344556677', trackingUrl: null, ...o })
     const tickets = [
-      mk('d1', 'Diana Lopez', 'diana@example.com', 'Where is my order?', 'Where is my order', 'Hi, I ordered 10 days ago and still have nothing. Can you tell me where it is? Order #INN17481', 30, { orders: [ord('#INN17481', {})], orderNumbers: ['#INN17481'] }),
-      mk('d2', 'Brittany Cole', 'brit@example.com', 'Cancel my subscription', 'Subscription', 'Please cancel, I have too many bottles at home right now.', 9, { orders: [ord('#INN17440', { subscription: true }), ord('#INN16012', { subscription: true, deliveredAt: ago(500) })], vip: true, spent: 119.98 }),
-      mk('d3', 'Dawn Reyes', 'dawn@example.com', 'Bad reaction', 'Adverse reaction', 'I got a rash on my neck after a week of taking these. Should I stop?', 3, { flags: ['reaction'], orders: [ord('#INN17390', { deliveredAt: ago(200) })] }),
+      mk('d1', 'Diana Lopez', 'diana@example.com', 'Where is my order?', 'Where is my order', 'Hi, I ordered 10 days ago and still have nothing. Can you tell me where it is? Order #INN17481', 30, { subscription: { state: 'Subscribed', source: 'loop', subs: [{ id: 4410021, status: 'ACTIVE', next: Math.floor(Date.now() / 1000) + 9 * 86400 }] }, orders: [ord('#INN17481', {})], orderNumbers: ['#INN17481'] }),
+      mk('d2', 'Brittany Cole', 'brit@example.com', 'Cancel my subscription', 'Subscription', 'Please cancel, I have too many bottles at home right now.', 9, { orders: [ord('#INN17440', { subscription: true }), ord('#INN16012', { subscription: true, deliveredAt: ago(500) })], vip: true, spent: 119.98, subscription: { state: 'Paused', source: 'loop', subs: [{ id: 4398710, status: 'PAUSED', pausedUntil: Math.floor(Date.now() / 1000) + 30 * 86400 }] } }),
+      mk('d3', 'Dawn Reyes', 'dawn@example.com', 'Bad reaction', 'Adverse reaction', 'I got a rash on my neck after a week of taking these. Should I stop?', 3, { flags: ['reaction'], orders: [ord('#INN17390', { deliveredAt: ago(200) })], subscription: { state: 'Cancelled', source: 'loop', subs: [{ id: 4371102, status: 'CANCELLED', cancelledAt: Math.floor(Date.now() / 1000) - 2 * 86400 }] } }),
       mk('d4', 'Tyler Brooks', 'tyler@example.com', 'Refund', 'Refund / return', 'It has not done anything for my dandruff after 3 weeks, I want my money back.', 52, { status: 'With Calvin', statusSet: true, clickup: { id: 'x', url: 'https://app.clickup.com', status: 'founder responded', calvinReplied: true, comments: [{ by: 'Calvin Beck', fromCalvin: true, at: ago(2), text: 'Offer 3 packs at 50% first. If he insists, refund the 1-pack.' }] } }),
       mk('d5', 'Kevin Ng', 'kevin@example.com', 'Re: Your order', 'Where is my order', 'Thanks, but tracking has not moved in a week.', 1.5, { reopened: true, statusSet: true, status: 'Done', orders: [ord('#INN17501', { fulfilledAt: ago(170) })], drafts: [] }),
       mk('d6', 'Patrice Hall', 'patrice@example.com', 'Question before buying', 'Product question', 'Can I take this with my thyroid medication?', 20),
@@ -1973,7 +2001,7 @@
     ]
     const tplDemo = [
       { key: 'wismo', title: 'Where is my order', categories: ['Where is my order'], approved: true, checklist: 'Check the order line matches Shopify.', body: "Hi {first_name},\n\nThank you for reaching out, and sorry for the wait.\n\n{order_status}\n\nIf anything looks off, just reply here and I'll chase it for you.\n\n{agent}\nInnaderm" },
-      { key: 'sub_change', title: 'Subscription: wants to cancel or pause', categories: ['Subscription'], approved: true, checklist: 'If they confirm: send to Calvin (Loop).', body: "Hi {first_name},\n\nThanks for letting me know. Before I make any changes, may I ask what prompted this? If it's timing or having too many on hand, I can pause your subscription or move your next delivery back instead, so nothing ships until you're ready.\n\n{agent}\nInnaderm" },
+      { key: 'sub_change', title: 'Subscription: wants to cancel or pause', categories: ['Subscription'], approved: true, checklist: 'If they confirm: escalate to Khethiwe (Loop).', body: "Hi {first_name},\n\nThanks for letting me know. Before I make any changes, may I ask what prompted this? If it's timing or having too many on hand, I can pause your subscription or move your next delivery back instead, so nothing ships until you're ready.\n\n{agent}\nInnaderm" },
       { key: 'reaction', title: 'Adverse reaction', categories: ['Adverse reaction'], approved: false, checklist: 'Send to Calvin the same day.', body: "Hi {first_name},\n\nI'm really sorry to hear this. Please stop taking the capsules for now, and if the reaction is severe or doesn't settle, please speak to a doctor or pharmacist.\n\n{agent}\nInnaderm" },
       { key: 'refund', title: 'Refund request (first reply)', categories: ['Refund / return'], approved: false, checklist: 'Any refund needs Calvin.', body: 'Hi {first_name},\n\nThank you for getting in touch...\n\n{agent}\nInnaderm' },
       { key: 'product_q', title: 'Product question', categories: ['Product question'], approved: false, checklist: 'Only answer from innaderm.com.', body: "Hi {first_name},\n\nThanks for your question!\n\n[ANSWER FROM THE PRODUCT PAGE OR CALVIN]\n\nIf you'd like to give it a try, here's 15% off your order: {discount_code}.\n\n{agent}\nInnaderm" },
@@ -1988,7 +2016,7 @@
     const stagesDemo = [{ key: 'manual', label: 'Manual', save: 0, help: 'Written from scratch each time.' }, { key: 'template', label: 'Approved template', save: 0.4, help: 'Agent picks the template; name, order and tracking fill in.' }, { key: 'autodraft', label: 'Auto-drafted in Gmail', save: 0.7, help: 'A filled draft is waiting in the Gmail thread when the ticket arrives. Agent checks and sends.' }, { key: 'autosend', label: 'Auto-send', save: 0.95, help: 'Sent without a person. Only Where is my order, after a test run of auto-drafts; anything the rules cannot answer for certain is still drafted.' }]
     const stageOf = { 'Where is my order': 'autodraft', Subscription: 'template' }
     const automation = cats.map((c) => { const st = stagesDemo.find((s) => s.key === (stageOf[c] || 'manual')); const tpl = tplDemo.find((x) => x.key === defaults[c]); return { category: c, potential: never.has(c) ? 'never' : ['Not working / results', 'Other'].includes(c) ? 'low' : 'high', play: '', stage: st.key, stageSince: st.key !== 'manual' ? ago(24 * 6) : null, owner: st.key !== 'manual' ? 'Khethiwe' : '', nextStep: c === 'Subscription' ? 'Approve wording with Calvin, then auto-draft' : '', perWeek: pw[c], hoursPerWeek: (pw[c] * 6) / 60, savedHoursPerWeek: (pw[c] * 6 * st.save) / 60, template: tpl ? { key: tpl.key, title: tpl.title, approved: tpl.approved } : null, draftsAgent28: st.key === 'template' ? 41 : 3, draftsAuto28: st.key === 'autodraft' ? 166 : 0, tickets28: pw[c] * 4 } })
-    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Khethiwe', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
+    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Khethiwe', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, loopReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
   }
 
   // ---------- demo data (layout check without secrets: /innaderm?demo=1) ----------
