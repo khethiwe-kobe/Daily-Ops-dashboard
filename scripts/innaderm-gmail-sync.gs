@@ -32,6 +32,7 @@
 
 const DASHBOARD_URL = 'https://daily-ops-dashboard-eight.vercel.app'
 const INGEST_KEY = 'PASTE_INNADERM_CS_INGEST_KEY_HERE'
+// (Spaces or line breaks pasted around the key are ignored.)
 
 // Names the agents sign replies with. The first one found near the end of a
 // reply is credited with it (this is how response time is split per person).
@@ -166,7 +167,7 @@ function post(threads, mailbox, backfillDone, backfill) {
     const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/ingest', {
       method: 'post',
       contentType: 'application/json',
-      headers: { Authorization: 'Bearer ' + INGEST_KEY },
+      headers: { Authorization: 'Bearer ' + INGEST_KEY.trim() },
       payload: JSON.stringify({ mailbox: mailbox, threads: threads.slice(i, i + BATCH), backfill: !!backfill, backfillDone: backfillDone && i + BATCH >= threads.length }),
       muteHttpExceptions: true,
     })
@@ -186,7 +187,7 @@ function makeDrafts() {
   const lock = LockService.getScriptLock()
   if (!lock.tryLock(1000)) return
   try {
-    const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts?v=' + SCRIPT_VERSION, { headers: { Authorization: 'Bearer ' + INGEST_KEY }, muteHttpExceptions: true })
+    const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts?v=' + SCRIPT_VERSION, { headers: { Authorization: 'Bearer ' + INGEST_KEY.trim() }, muteHttpExceptions: true })
     if (res.getResponseCode() !== 200) return
     const queue = JSON.parse(res.getContentText()).drafts || []
     if (!queue.length) return
@@ -212,7 +213,7 @@ function makeDrafts() {
       }
     })
     UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/drafts', {
-      method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + INGEST_KEY },
+      method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + INGEST_KEY.trim() },
       payload: JSON.stringify({ results: results }), muteHttpExceptions: true,
     })
   } finally {
