@@ -13,9 +13,11 @@
   const SERIES = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)']
   const params = new URLSearchParams(location.search)
   const DEMO = params.get('demo') === '1'
+  const LS_MERGE = 'inn.board.merge'
 
   const state = {
     token: safeGet(LS_TOKEN),
+    mergeCustomers: safeGet(LS_MERGE) !== 'off',
     me: null,
     days: PERIODS.includes(Number(safeGet(LS_DAYS))) ? Number(safeGet(LS_DAYS)) : 7,
     data: null,
@@ -1442,6 +1444,61 @@
     loadBoard(true)
   }, 120e3)
 
+  // One row per customer: every open email from the same address becomes one
+  // ticket. The newest email is the one we reply to; status changes apply to
+  // all of them, so closing BP once closes all his emails.
+  const CLOSED_LOCAL = ['Done', 'Skip', 'Replied', 'Waiting on customer']
+  function mergedTickets(b) {
+    if (state.mergeCustomers === false) return b.tickets
+    if (b._merged) return b._merged
+    const groups = new Map()
+    for (const t of b.tickets) {
+      const k = (t.customerEmail || '').toLowerCase() || 'id:' + t.id
+      if (!groups.has(k)) groups.set(k, [])
+      groups.get(k).push(t)
+    }
+    const out = []
+    for (const members of groups.values()) {
+      if (members.length === 1) { out.push(members[0]); continue }
+      members.sort((a, c) => new Date(c.lastIn || c.lastOut || 0) - new Date(a.lastIn || a.lastOut || 0))
+      const p = members[0]
+      const waiting = members.filter((m) => m.needsReply)
+      const openOne = members.find((m) => !CLOSED_LOCAL.includes(m.status))
+      const uniq = (xs) => [...new Set(xs.filter(Boolean))]
+      out.push({
+        ...p,
+        members,
+        status: CLOSED_LOCAL.includes(p.status) && openOne ? openOne.status : p.status,
+        needsReply: waiting.length > 0,
+        reopened: members.some((m) => m.reopened),
+        waitingHours: waiting.length ? Math.max(...waiting.map((m) => m.waitingHours || 0)) : p.waitingHours,
+        firstIn: members.map((m) => m.firstIn).filter(Boolean).sort()[0] || p.firstIn,
+        flags: uniq(members.flatMap((m) => m.flags || [])),
+        orderNumbers: uniq(members.flatMap((m) => m.orderNumbers || [])),
+        msgsIn: members.reduce((a, m) => a + (m.msgsIn || 0), 0),
+        msgsOut: members.reduce((a, m) => a + (m.msgsOut || 0), 0),
+        clickup: p.clickup || members.find((m) => m.clickup)?.clickup || null,
+        reason: p.reason || members.find((m) => m.reason)?.reason || null,
+        reasonNote: p.reasonNote || members.find((m) => m.reasonNote)?.reasonNote || '',
+        reasonAt: p.reasonAt || members.find((m) => m.reasonAt)?.reasonAt || null,
+      })
+    }
+    b._merged = out
+    return out
+  }
+
+  function mergedBox(t) {
+    if (!t.members || t.members.length < 2) return null
+    return h('div', { class: 'merged' },
+      h('div', { class: 'lbl', text: `${t.members.length} emails from this customer, merged into one ticket (newest first). Status changes apply to all of them.` }),
+      h('ol', { class: 'merged-list' }, t.members.map((m, i) => h('li', null,
+        h('a', { href: m.link, target: '_blank', rel: 'noopener', text: m.subject || '(no subject)' }),
+        h('span', { class: 'muted', text: ` · ${fmtStamp(m.lastIn || m.firstIn)}${m.orderNumbers?.length ? ' · ' + m.orderNumbers.join(', ') : ''}` }),
+        ' ', h('span', { class: 'tag ' + (STATUS_CLS[m.status] || ''), text: m.status }),
+        i === 0 ? h('span', { class: 'tag', text: 'replying here' }) : null,
+        m.lastExcerpt ? h('div', { class: 'muted merged-ex', text: m.lastExcerpt.slice(0, 220) + (m.lastExcerpt.length > 220 ? '…' : '') }) : null))))
+  }
+
   // Recount the reasons panel locally after a change (the server recounts on reload).
   function localReasonStats(b) {
     const since = Date.now() - 30 * 864e5, by = new Map()
@@ -1457,7 +1514,8 @@
         h('select', { 'aria-label': "Customer's reason", onchange: (e) => saveTicket(t, { reason: e.target.value }) },
           h('option', { value: '', text: t.reason ? 'Clear reason' : 'Pick a reason…', selected: !t.reason }),
           (b.reasons || []).map((r) => h('option', { value: r, text: r, selected: r === t.reason }))),
-        h('input', { type: 'text', maxlength: 500, placeholder: 'Their words, e.g. "allergic to fish oil"', value: t.reasonNote || '', 'aria-label': 'Reason in their words', onchange: (e) => saveTicket(t, { reasonNote: e.target.value }) })))
+      ),
+      h('textarea', { class: 'reason-note', rows: 2, maxlength: 500, placeholder: 'Their words, e.g. "allergic to fish oil, didn\'t know it was in it"', 'aria-label': 'Reason in their words', onchange: (e) => saveTicket(t, { reasonNote: e.target.value }) }, t.reasonNote || ''))
   }
 
   function reasonsPanel(b) {
@@ -1475,6 +1533,15 @@
   }
 
   async function saveTicket(t, patch) {
+    // A merged ticket: status goes to every email from the customer; everything
+    // else is saved on the newest email.
+    if (t.members && t.members.length > 1) {
+      const targets = patch.status ? t.members : [t.members[0]]
+      if (state.board) state.board._merged = null
+      for (const m of targets) await saveTicket(m, patch)
+      return
+    }
+    if (state.board) state.board._merged = null
     Object.assign(t, patch.status ? { status: patch.status, statusSet: true, reopened: false, needsReply: ['Done', 'Skip', 'Replied', 'Waiting on customer'].includes(patch.status) ? false : t.needsReply } : {}, patch.note !== undefined ? { note: patch.note } : {}, patch.category ? { category: patch.category } : {}, patch.reason !== undefined ? { reason: patch.reason || null, reasonAt: patch.reason ? new Date().toISOString() : null } : {}, patch.reasonNote !== undefined ? { reasonNote: patch.reasonNote } : {})
     if (patch.reason !== undefined && state.board?.reasonStats) state.board.reasonStats = localReasonStats(state.board)
     render()
@@ -1505,8 +1572,9 @@
 
   function ticketsView(b) {
     const qKey = state.boardQueue || 'reply'
-    const counts = Object.fromEntries(QUEUES.map(([k, , f]) => [k, b.tickets.filter(f).length]))
-    const calvinNew = b.tickets.filter((t) => ESCALATED.includes(t.status) && t.clickup?.calvinReplied).length
+    const all = mergedTickets(b)
+    const counts = Object.fromEntries(QUEUES.map(([k, , f]) => [k, all.filter(f).length]))
+    const calvinNew = all.filter((t) => ESCALATED.includes(t.status) && t.clickup?.calvinReplied).length
     const frag = h('div')
     frag.append(h('div', { class: 'queues' }, QUEUES.map(([k, l]) => h('button', { class: 'q' + (k === qKey ? ' on' : ''), onclick: () => { state.boardQueue = k; state.openTicket = null; render() } },
       l, h('b', { text: fmtInt(counts[k]) }), k === 'calvin' && calvinNew ? h('span', { class: 'tag good', text: `${calvinNew} answered` }) : null)),
@@ -1514,8 +1582,8 @@
     frag.append(reasonsPanel(b))
     const f = QUEUES.find(([k]) => k === qKey)[2]
     const needle = (state.boardSearch || '').trim().toLowerCase()
-    let list = state.reasonFilter ? b.tickets.filter((t) => t.reason === state.reasonFilter) : b.tickets.filter(f)
-    if (needle) list = b.tickets.filter((t) => [t.customerName, t.customerEmail, t.subject, t.lastExcerpt, ...(t.orderNumbers || []), ...(t.orders || []).map((o) => o.name)].join(' ').toLowerCase().includes(needle))
+    let list = state.reasonFilter ? all.filter((t) => t.reason === state.reasonFilter) : all.filter(f)
+    if (needle) list = all.filter((t) => [t.customerName, t.customerEmail, t.subject, t.lastExcerpt, ...(t.orderNumbers || []), ...(t.orders || []).map((o) => o.name)].join(' ').toLowerCase().includes(needle))
     const risk = (t) => (t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') ? 1 : 0)
     // Sort by the customer's latest message (default: longest waiting first) or
     // by when they first wrote. Risky tickets lead only in the default order.
@@ -1528,7 +1596,8 @@
       h('label', null, 'Sort ', h('select', { onchange: (e) => { state.boardSort = e.target.value; render() } },
         [['waiting', 'Waiting longest (risky first)'], ['newest', 'Latest message: newest first'], ['oldest', 'Latest message: oldest first'], ['first_new', 'First contact: newest first'], ['first', 'First contact: oldest first']]
           .map(([v, l]) => h('option', { value: v, selected: v === sortKey, text: l })))),
-      h('label', null, h('input', { type: 'checkbox', checked: grouped, onchange: (e) => { state.boardGroup = e.target.checked; render() } }), ' Group by type')))
+      h('label', null, h('input', { type: 'checkbox', checked: grouped, onchange: (e) => { state.boardGroup = e.target.checked; render() } }), ' Group by type'),
+      h('label', null, h('input', { type: 'checkbox', checked: state.mergeCustomers !== false, onchange: (e) => { state.mergeCustomers = e.target.checked; b._merged = null; safeSet(LS_MERGE, e.target.checked ? null : 'off'); render() } }), ' Merge same customer')))
     if (!list.length) { frag.append(h('div', { class: 'card empty', text: needle ? 'Nothing matches that search.' : qKey === 'reply' ? 'Inbox zero. Nobody is waiting on us.' : 'Nothing here.' })); return frag }
     if (!grouped) { frag.append(h('div', { class: 'tlist', style: 'margin-top:12px' }, list.map((t) => ticketRow(t, b)))); return frag }
     const groups = new Map()
@@ -1568,6 +1637,7 @@
       h('span', { class: 'who' }, h('b', { text: t.customerName || t.customerEmail || 'Unknown', title: t.customerEmail || '' }), t.vip ? tag('VIP', 'warn') : null),
       h('span', { class: 'subj' }, h('span', { class: 's', text: t.subject }), h('span', { class: 'when', title: `First contact ${fmtStamp(t.firstIn)}`, text: fmtStamp(t.lastIn) })),
       h('span', { class: 'tags' },
+        t.members && t.members.length > 1 ? h('span', { class: 'tag warn', title: t.members.map((m) => m.subject).join(' · '), text: `${t.members.length} emails` }) : null,
         subTag(t),
         t.reason ? h('span', { class: 'tag', title: t.reasonNote || "Customer's reason", text: t.reason }) : null,
         t.reopened ? tag('Replied again', 'bad') : null,
@@ -1591,6 +1661,7 @@
       h('span', { class: 'muted', text: `${t.customerEmail || ''} · first wrote ${fmtStamp(t.firstIn)} · ${t.msgsIn} from them, ${t.msgsOut} from us` })))
     left.append(h('div', { class: 'msg' }, h('div', { class: 'lbl', text: `Their latest message · ${fmtStamp(t.lastIn)} (${agoTxt(t.lastIn)})` }), h('p', { text: t.lastExcerpt || t.excerpt || '(message text arrives with the updated Gmail script)' })))
     if (t.excerpt && t.lastExcerpt && !t.lastExcerpt.startsWith(t.excerpt.slice(0, 60))) left.append(h('details', { class: 'msg first' }, h('summary', { text: 'First message' }), h('p', { text: t.excerpt })))
+    const mb = mergedBox(t); if (mb) left.append(mb)
     left.append(h('div', { class: 'lbl', style: 'margin-top:12px', text: t.orders?.length ? `Orders${t.spent ? ` · $${Math.round(t.spent)} spent` : ''}${t.vip ? ' · VIP (2+ orders or $100+)' : ''}` : 'Orders' }))
     left.append(t.orders?.length ? h('div', { style: 'overflow:auto' }, h('table', { class: 'tbl' },
       h('thead', null, h('tr', null, ['Order', 'Placed', 'Payment', 'Fulfilment', 'Tracking', 'Total'].map((x, i) => h('th', { class: i > 4 ? 'num' : '', text: x })))),
@@ -2032,6 +2103,7 @@
     const tickets = [
       mk('d1', 'Diana Lopez', 'diana@example.com', 'Where is my order?', 'Where is my order', 'Hi, I ordered 10 days ago and still have nothing. Can you tell me where it is? Order #INN17481', 30, { subscription: { state: 'Subscribed', source: 'loop', subs: [{ id: 4410021, status: 'ACTIVE', next: Math.floor(Date.now() / 1000) + 9 * 86400 }] }, orders: [ord('#INN17481', {})], orderNumbers: ['#INN17481'] }),
       mk('d2', 'Brittany Cole', 'brit@example.com', 'Cancel my subscription', 'Subscription', 'Please cancel, I have too many bottles at home right now.', 9, { orders: [ord('#INN17440', { subscription: true }), ord('#INN16012', { subscription: true, deliveredAt: ago(500) })], vip: true, spent: 119.98, subscription: { state: 'Paused', source: 'loop', subs: [{ id: 4398710, status: 'PAUSED', pausedUntil: Math.floor(Date.now() / 1000) + 30 * 86400 }] } }),
+      mk('d2b', 'Brittany Cole', 'brit@example.com', 'Re: Cancel my subscription (2nd ask)', 'Subscription', 'Following up, please cancel before my next order ships.', 30, { orders: [] }),
       mk('d3', 'Dawn Reyes', 'dawn@example.com', 'Bad reaction', 'Adverse reaction', 'I got a rash on my neck after a week of taking these. Should I stop?', 3, { flags: ['reaction'], orders: [ord('#INN17390', { deliveredAt: ago(200) })], subscription: { state: 'Cancelled', source: 'loop', subs: [{ id: 4371102, status: 'CANCELLED', cancelledAt: Math.floor(Date.now() / 1000) - 2 * 86400 }] } }),
       mk('d4', 'Tyler Brooks', 'tyler@example.com', 'Refund', 'Refund / return', 'It has not done anything for my dandruff after 3 weeks, I want my money back.', 52, { status: 'With Calvin', statusSet: true, clickup: { id: 'x', url: 'https://app.clickup.com', status: 'founder responded', calvinReplied: true, comments: [{ by: 'Calvin Beck', fromCalvin: true, at: ago(2), text: 'Offer 3 packs at 50% first. If he insists, refund the 1-pack.' }] } }),
       mk('d5', 'Kevin Ng', 'kevin@example.com', 'Re: Your order', 'Where is my order', 'Thanks, but tracking has not moved in a week.', 1.5, { reopened: true, statusSet: true, status: 'Done', orders: [ord('#INN17501', { fulfilledAt: ago(170) })], drafts: [] }),
