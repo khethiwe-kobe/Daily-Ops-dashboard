@@ -24,6 +24,10 @@
  *
  * Updating an existing install (keeps the sync position): paste the new code
  * over the old, keep your INGEST_KEY, then run "upgrade" once.
+ *
+ * If the dashboard shows Gmail as stale (no sync for days): paste the new code,
+ * check INGEST_KEY matches INNADERM_CS_INGEST_KEY in Vercel, then run "setup"
+ * (not upgrade). setup re-sends the last 90 days, keeping every board status.
  */
 
 const DASHBOARD_URL = 'https://daily-ops-dashboard-eight.vercel.app'
@@ -77,21 +81,33 @@ function sync() {
   const me = Session.getEffectiveUser().getEmail().toLowerCase()
   const team = [me].concat(GmailApp.getAliases().map(function (a) { return a.toLowerCase() }))
 
-  // 1) New activity since the last run (with an hour of overlap).
+  // 1) New activity since the last run (with an hour of overlap). A long
+  // catch-up (for example after the script was stopped for days) is paged
+  // with a saved cursor across runs, and lastRun only moves once every page
+  // is sent, so no thread is ever skipped.
   const lastRun = Number(props.getProperty('lastRun') || 0)
   const runStartedSec = Math.floor(started / 1000)
   if (lastRun) {
-    const since = lastRun - 3600
-    let start = 0
+    const since = Number(props.getProperty('catchupSince') || (lastRun - 3600))
+    let start = Number(props.getProperty('catchupStart') || 0)
+    let finished = false
     while (Date.now() - started < TIME_BUDGET_MS / 2) {
       const threads = GmailApp.search('-in:spam -in:trash -in:drafts after:' + since, start, 100)
-      if (!threads.length) break
-      post(threads.map(function (t) { return pack(t, team) }).filter(Boolean), me, false, false)
-      if (threads.length < 100) break
+      if (threads.length) post(threads.map(function (t) { return pack(t, team) }).filter(Boolean), me, false, false)
+      if (threads.length < 100) { finished = true; break }
       start += 100
     }
+    if (finished) {
+      props.deleteProperty('catchupSince')
+      props.deleteProperty('catchupStart')
+      props.setProperty('lastRun', String(runStartedSec))
+    } else {
+      props.setProperty('catchupSince', String(since))
+      props.setProperty('catchupStart', String(start))
+    }
+  } else {
+    props.setProperty('lastRun', String(runStartedSec))
   }
-  props.setProperty('lastRun', String(runStartedSec))
 
   // 2) Backfill, 100 threads at a time, until done.
   const bfStart = props.getProperty('backfillStart')
@@ -115,17 +131,29 @@ function pack(thread, team) {
   let customer = null, customerName = '', excerpt = '', lastExcerpt = '', hasCustomer = false
   thread.getMessages().forEach(function (m) {
     if (m.isDraft()) return
-    const from = addr(m.getFrom())
+    let from = addr(m.getFrom())
+    let fromHeader = m.getFrom()
     const isTeam = team.indexOf(from) !== -1
-    if (!isTeam && SYSTEM_SENDERS.test(from)) return
+    // The store's contact form arrives from mailer@shopify.com with the
+    // customer in Reply-To: treat it as the customer's own message.
+    const form = !isTeam && /@shopify\.com$/i.test(from) && /new customer message/i.test(m.getSubject() || '')
+    if (form) {
+      const rt = addr(m.getReplyTo())
+      if (!rt || /@shopify\.com$/i.test(rt)) return
+      const nm = (m.getPlainBody().match(/Name:\s*\n?\s*([^\n]+)/) || [])[1] || ''
+      from = rt
+      fromHeader = (nm.trim() ? '"' + nm.trim() + '" ' : '') + '<' + rt + '>'
+    }
+    if (!isTeam && !form && SYSTEM_SENDERS.test(from)) return
     const msg = { id: m.getId(), at: m.getDate().toISOString(), dir: isTeam ? 'out' : 'in', agent: null }
     if (isTeam) {
       msg.agent = agentOf(m.getPlainBody())
     } else {
       hasCustomer = true
       const body = m.getPlainBody()
-      if (!customer) { customer = from; customerName = displayName(m.getFrom()); excerpt = firstLines(body) }
-      lastExcerpt = ownText(body).slice(0, 2000)
+      const text = form ? formComment(body) : body
+      if (!customer) { customer = from; customerName = displayName(fromHeader); excerpt = firstLines(text) }
+      lastExcerpt = ownText(text).slice(0, 2000)
     }
     messages.push(msg)
   })
@@ -153,7 +181,7 @@ function post(threads, mailbox, backfillDone, backfill) {
 // go to the customer straight away. A refreshed draft deletes the one it
 // replaces (version 3). Runs every minute (and at the start of each sync). The dashboard claims each
 // item as it hands it out, so a reply is never sent twice.
-const SCRIPT_VERSION = 3
+const SCRIPT_VERSION = 4
 function makeDrafts() {
   const lock = LockService.getScriptLock()
   if (!lock.tryLock(1000)) return
@@ -190,6 +218,12 @@ function makeDrafts() {
   } finally {
     lock.releaseLock()
   }
+}
+
+// The customer's words from a contact-form email: the text after "Comment:".
+function formComment(body) {
+  const m = String(body || '').match(/Comment:\s*([\s\S]*?)(\n-{5,}|You can enable spam filtering|$)/i)
+  return m ? m[1].trim() : String(body || '')
 }
 
 function displayName(from) {

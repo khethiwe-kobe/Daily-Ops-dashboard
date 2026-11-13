@@ -85,6 +85,9 @@
   const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '–')
   const fmtDateLong = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '–')
   const fmtTime = (d) => (d ? new Date(d).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '–')
+  // Time today, otherwise day + time, so a sync that stopped days ago never looks current.
+  const fmtWhen = (d) => { if (!d) return '–'; const x = new Date(d); return x.toDateString() === new Date().toDateString() ? fmtTime(x) : x.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }
+  const gmailStale = (at) => !!at && Date.now() - new Date(at).getTime() > 60 * 60e3
   const hours = (hrs) => (hrs == null ? '–' : hrs < 48 ? fmt1(hrs) + ' h' : fmt1(hrs / 24) + ' d')
   const addDays = (n) => new Date(Date.now() + n * 86400e3)
   const dayLabel = (iso) => { const d = new Date(iso + 'T00:00:00Z'); return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }) }
@@ -625,13 +628,13 @@
       if (state.csLoading && !c) sync = h('span', { class: 'pill busy' }, h('i', { class: 'dot' }), 'Loading…')
       else if (c && !c.connected) sync = h('span', { class: 'pill bad' }, h('i', { class: 'dot' }), 'Gmail not connected')
       else if (c?.sync?.lastIngestAt) {
-        const stale = Date.now() - new Date(c.sync.lastIngestAt).getTime() > 60 * 60e3
-        sync = h('span', { class: 'pill' + (stale ? ' warn' : ''), title: stale ? 'No sync for over an hour: check the Apps Script executions' : 'Click to refresh', onclick: loadCs, style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(c.sync.lastIngestAt)}`)
+        const stale = gmailStale(c.sync.lastIngestAt)
+        sync = h('span', { class: 'pill' + (stale ? ' bad' : ''), title: stale ? 'No new emails synced for over an hour: check the Apps Script' : 'Click to refresh', onclick: loadCs, style: 'cursor:pointer' }, h('i', { class: 'dot' }), stale ? `Gmail stopped ${fmtWhen(c.sync.lastIngestAt)}` : `Gmail ${fmtWhen(c.sync.lastIngestAt)}`)
       }
     }
     if (state.view === 'board' && !DEMO) {
       const at = state.board?.sync?.lastIngestAt
-      sync = at ? h('span', { class: 'pill', title: 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), `Gmail ${fmtTime(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
+      sync = at ? h('span', { class: 'pill' + (gmailStale(at) ? ' bad' : ''), title: gmailStale(at) ? 'No new emails synced for over an hour: check the Apps Script' : 'Click to refresh', onclick: () => loadBoard(), style: 'cursor:pointer' }, h('i', { class: 'dot' }), gmailStale(at) ? `Gmail stopped ${fmtWhen(at)}` : `Gmail ${fmtWhen(at)}`) : h('span', { class: 'pill' + (state.boardLoading ? ' busy' : ' bad') }, h('i', { class: 'dot' }), state.boardLoading ? 'Loading…' : 'Gmail not synced')
     }
     const setView = (v) => { if (state.view === v) return; state.view = v; safeSet(LS_VIEW, v); render(); if (v === 'matrix') return; if (v === 'cs' ? !state.cs : v === 'board' ? !state.board : v === 'serentia' ? !state.ser : !state.data) load(); else render() }
     const tabs = h('div', { class: 'seg tabs', role: 'tablist', 'aria-label': 'Dashboard' }, tabsFor(state.me).map(([v, l]) => h('button', { role: 'tab', 'aria-selected': String(state.view === v), 'aria-pressed': String(state.view === v), text: l, onclick: () => setView(v) })))
@@ -1456,6 +1459,8 @@
       h('div', { class: 'seg', role: 'tablist' }, [['tickets', 'Tickets'], ['auto', 'Automations'], ['templates', 'Templates']].map(([k, l]) => h('button', { 'aria-pressed': String(sub === k), text: l, onclick: () => { state.boardSub = k; render() } }))),
       h('label', { class: 'signer' }, 'Signing as ', h('input', { value: signer(), placeholder: 'your name', 'aria-label': 'Your sign-off name', onchange: (e) => { safeSet(LS_SIGNER, e.target.value.trim() || null); render() } }))))
     if (!b.sync?.lastIngestAt && !DEMO) wrap.append(h('div', { class: 'banner bad', text: 'No Gmail data yet. Check the Apps Script in the support inbox is running.' }))
+    else if (gmailStale(b.sync?.lastIngestAt) && !DEMO) wrap.append(h('div', { class: 'banner bad', text: `New emails stopped arriving on ${fmtWhen(b.sync.lastIngestAt)}, so newer tickets are missing from this board. Check the "Innaderm CS sync" Apps Script in the support inbox (Executions and Triggers), then run "setup" once.${b.draftScript?.at && Date.now() - new Date(b.draftScript.at).getTime() < 15 * 60e3 ? ' The script is still running (drafts checked recently), so the problem is the email sync itself, often the INGEST_KEY.' : ''}` }))
+    if (b.draftScript && !(b.draftScript.version >= 4) && !DEMO && state.me?.role === 'admin' && !gmailStale(b.sync?.lastIngestAt)) wrap.append(h('div', { class: 'banner', text: 'Emails sent through the website contact form need the latest Gmail script (version 4). Paste the updated script into script.google.com and run "upgrade" once.' }))
     if (b.sync?.lastIngestAt && !b.draftScript && !DEMO) wrap.append(h('div', { class: 'banner', text: 'The Gmail script has not picked up drafts yet. Paste the updated script into script.google.com and run "upgrade" once, then "Put in Gmail" works.' }))
     else if (b.draftScript && !(b.draftScript.version >= 2) && !DEMO && state.me?.role === 'admin') wrap.append(h('div', { class: 'banner', text: '"Send reply" needs the latest Gmail script. Paste the updated script into script.google.com and run "upgrade" once. Until then, replies queued with Send reply wait and drafts keep working.' }))
     else if (b.draftScript && !(b.draftScript.version >= 3) && !DEMO && state.me?.role === 'admin') wrap.append(h('div', { class: 'banner', text: 'Refreshed drafts need the latest Gmail script (version 3). Paste the updated script into script.google.com and run "upgrade" once. Until then, when an order ships after its draft was written, the new draft is added next to the old one instead of replacing it.' }))
