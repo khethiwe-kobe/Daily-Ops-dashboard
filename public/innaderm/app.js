@@ -117,7 +117,7 @@
 
   async function boot() {
     applyTheme()
-    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); state.board = demoBoard(); state.ser = demoSerentia(); render(); return }
+    if (DEMO) { state.me = { name: 'Demo viewer', role: 'admin' }; state.data = demoData(); state.cs = demoCs(); state.board = demoBoard(); state.board.reasonStats = localReasonStats(state.board); state.ser = demoSerentia(); render(); return }
     if (state.token || document.cookie.includes('inn_session')) {
       try { state.me = await api('/auth/me') } catch { state.me = null }
     }
@@ -1429,7 +1429,7 @@
   const fillTpl = (body, vars) => String(body).replace(/\{(\w+)\}/g, (m, k) => (vars[k] != null && vars[k] !== '' ? vars[k] : m))
 
   async function loadBoard(quiet) {
-    if (DEMO) { state.board = demoBoard(); render(); return }
+    if (DEMO) { state.board = demoBoard(); state.board.reasonStats = localReasonStats(state.board); render(); return }
     if (!quiet) { state.boardLoading = true; state.boardError = null; render() }
     try { state.board = await api('/cs/board') } catch (e) { state.boardError = e.message }
     state.boardLoading = false; render()
@@ -1442,8 +1442,41 @@
     loadBoard(true)
   }, 120e3)
 
+  // Recount the reasons panel locally after a change (the server recounts on reload).
+  function localReasonStats(b) {
+    const since = Date.now() - 30 * 864e5, by = new Map()
+    for (const t of b.tickets) if (t.reason && new Date(t.reasonAt || 0).getTime() > since) { const r = by.get(t.reason) || { reason: t.reason, n: 0, notes: [] }; r.n++; if (t.reasonNote && r.notes.length < 3) r.notes.push(t.reasonNote); by.set(t.reason, r) }
+    const rows = [...by.values()].sort((a, c) => c.n - a.n || a.reason.localeCompare(c.reason))
+    return { days: 30, total: rows.reduce((a, r) => a + r.n, 0), rows }
+  }
+
+  function reasonBox(t, b) {
+    return h('div', { class: 'reasonbox' },
+      h('div', { class: 'lbl', text: "Customer's reason (cancel, pause, refund or complaint)" }),
+      h('div', { class: 'reason-row' },
+        h('select', { 'aria-label': "Customer's reason", onchange: (e) => saveTicket(t, { reason: e.target.value }) },
+          h('option', { value: '', text: t.reason ? 'Clear reason' : 'Pick a reason…', selected: !t.reason }),
+          (b.reasons || []).map((r) => h('option', { value: r, text: r, selected: r === t.reason }))),
+        h('input', { type: 'text', maxlength: 500, placeholder: 'Their words, e.g. "allergic to fish oil"', value: t.reasonNote || '', 'aria-label': 'Reason in their words', onchange: (e) => saveTicket(t, { reasonNote: e.target.value }) })))
+  }
+
+  function reasonsPanel(b) {
+    const s = b.reasonStats
+    if (!s) return null
+    const on = state.reasonFilter
+    const panel = h('details', { class: 'card reasons', open: state.reasonsOpen !== false, ontoggle: (e) => { state.reasonsOpen = e.target.open } },
+      h('summary', null, h('b', { text: 'Why customers are leaving or asking for money back' }), h('span', { class: 'muted', text: ` · last ${s.days} days · ${fmtInt(s.total)} logged` })))
+    if (!s.total) { panel.append(h('p', { class: 'muted', style: 'margin:8px 0 2px', text: "Nothing logged yet. Open a cancel, pause or refund ticket and pick the customer's reason under the note." })); return panel }
+    const max = Math.max(...s.rows.map((r) => r.n))
+    panel.append(h('div', { class: 'rbars' }, s.rows.map((r) => h('button', { class: 'rbar' + (on === r.reason ? ' on' : ''), title: r.notes.length ? 'Latest: ' + r.notes.join(' · ') : 'Show these tickets', 'aria-pressed': String(on === r.reason), onclick: () => { state.reasonFilter = on === r.reason ? null : r.reason; state.openTicket = null; render() } },
+      h('span', { class: 'rl', text: r.reason }), h('span', { class: 'rt' }, h('i', { style: `width:${Math.max(4, Math.round(r.n / max * 100))}%` })), h('b', { text: fmtInt(r.n) })))))
+    if (on) panel.append(h('p', { class: 'muted', style: 'margin:6px 0 0;font-size:13px' }, `Showing tickets logged as "${on}". `, h('button', { class: 'btn sm ghost', text: 'Show all', onclick: () => { state.reasonFilter = null; render() } })))
+    return panel
+  }
+
   async function saveTicket(t, patch) {
-    Object.assign(t, patch.status ? { status: patch.status, statusSet: true, reopened: false, needsReply: ['Done', 'Skip', 'Replied', 'Waiting on customer'].includes(patch.status) ? false : t.needsReply } : {}, patch.note !== undefined ? { note: patch.note } : {}, patch.category ? { category: patch.category } : {})
+    Object.assign(t, patch.status ? { status: patch.status, statusSet: true, reopened: false, needsReply: ['Done', 'Skip', 'Replied', 'Waiting on customer'].includes(patch.status) ? false : t.needsReply } : {}, patch.note !== undefined ? { note: patch.note } : {}, patch.category ? { category: patch.category } : {}, patch.reason !== undefined ? { reason: patch.reason || null, reasonAt: patch.reason ? new Date().toISOString() : null } : {}, patch.reasonNote !== undefined ? { reasonNote: patch.reasonNote } : {})
+    if (patch.reason !== undefined && state.board?.reasonStats) state.board.reasonStats = localReasonStats(state.board)
     render()
     if (DEMO) return
     try { await api('/cs/board', { method: 'POST', body: { id: t.id, ...patch } }) } catch (e) { alert('Not saved: ' + e.message); loadBoard(true) }
@@ -1460,7 +1493,7 @@
       h('label', { class: 'signer' }, 'Signing as ', h('input', { value: signer(), placeholder: 'your name', 'aria-label': 'Your sign-off name', onchange: (e) => { safeSet(LS_SIGNER, e.target.value.trim() || null); render() } }))))
     if (!b.sync?.lastIngestAt && !DEMO) wrap.append(h('div', { class: 'banner bad', text: 'No Gmail data yet. Check the Apps Script in the support inbox is running.' }))
     else if (gmailStale(b.sync?.lastIngestAt) && !DEMO) wrap.append(h('div', { class: 'banner bad', text: `New emails stopped arriving on ${fmtWhen(b.sync.lastIngestAt)}, so newer tickets are missing from this board. Check the "Innaderm CS sync" Apps Script in the support inbox (Executions and Triggers), then run "setup" once.${b.draftScript?.at && Date.now() - new Date(b.draftScript.at).getTime() < 15 * 60e3 ? ' The script is still running (drafts checked recently), so the problem is the email sync itself, often the INGEST_KEY.' : ''}` }))
-    if (b.draftScript && !(b.draftScript.version >= 4) && !DEMO && state.me?.role === 'admin' && !gmailStale(b.sync?.lastIngestAt)) wrap.append(h('div', { class: 'banner', text: 'Emails sent through the website contact form need the latest Gmail script (version 4). Paste the updated script into script.google.com and run "upgrade" once.' }))
+    if (b.draftScript && !(b.draftScript.version >= 5) && !DEMO && state.me?.role === 'admin' && !gmailStale(b.sync?.lastIngestAt)) wrap.append(h('div', { class: 'banner', text: 'Update the Gmail script to version 5: it picks up website contact-form emails and checks in every 5 minutes, so a quiet inbox never shows as "stopped". Paste the updated script into script.google.com (keep your INGEST_KEY) and run "upgrade" once.' }))
     if (b.sync?.lastIngestAt && !b.draftScript && !DEMO) wrap.append(h('div', { class: 'banner', text: 'The Gmail script has not picked up drafts yet. Paste the updated script into script.google.com and run "upgrade" once, then "Put in Gmail" works.' }))
     else if (b.draftScript && !(b.draftScript.version >= 2) && !DEMO && state.me?.role === 'admin') wrap.append(h('div', { class: 'banner', text: '"Send reply" needs the latest Gmail script. Paste the updated script into script.google.com and run "upgrade" once. Until then, replies queued with Send reply wait and drafts keep working.' }))
     else if (b.draftScript && !(b.draftScript.version >= 3) && !DEMO && state.me?.role === 'admin') wrap.append(h('div', { class: 'banner', text: 'Refreshed drafts need the latest Gmail script (version 3). Paste the updated script into script.google.com and run "upgrade" once. Until then, when an order ships after its draft was written, the new draft is added next to the old one instead of replacing it.' }))
@@ -1478,9 +1511,10 @@
     frag.append(h('div', { class: 'queues' }, QUEUES.map(([k, l]) => h('button', { class: 'q' + (k === qKey ? ' on' : ''), onclick: () => { state.boardQueue = k; state.openTicket = null; render() } },
       l, h('b', { text: fmtInt(counts[k]) }), k === 'calvin' && calvinNew ? h('span', { class: 'tag good', text: `${calvinNew} answered` }) : null)),
       h('input', { class: 'search', type: 'search', placeholder: 'Search name, email, subject, #INN…', value: state.boardSearch || '', oninput: (e) => { state.boardSearch = e.target.value; clearTimeout(state._st); state._st = setTimeout(() => { render(); const el = $('.board .search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) } }, 250) } })))
+    frag.append(reasonsPanel(b))
     const f = QUEUES.find(([k]) => k === qKey)[2]
     const needle = (state.boardSearch || '').trim().toLowerCase()
-    let list = b.tickets.filter(f)
+    let list = state.reasonFilter ? b.tickets.filter((t) => t.reason === state.reasonFilter) : b.tickets.filter(f)
     if (needle) list = b.tickets.filter((t) => [t.customerName, t.customerEmail, t.subject, t.lastExcerpt, ...(t.orderNumbers || []), ...(t.orders || []).map((o) => o.name)].join(' ').toLowerCase().includes(needle))
     const risk = (t) => (t.flags.some((x) => x === 'chargeback' || x === 'legal' || x === 'reaction') ? 1 : 0)
     // Sort by the customer's latest message (default: longest waiting first) or
@@ -1535,6 +1569,7 @@
       h('span', { class: 'subj' }, h('span', { class: 's', text: t.subject }), h('span', { class: 'when', title: `First contact ${fmtStamp(t.firstIn)}`, text: fmtStamp(t.lastIn) })),
       h('span', { class: 'tags' },
         subTag(t),
+        t.reason ? h('span', { class: 'tag', title: t.reasonNote || "Customer's reason", text: t.reason }) : null,
         t.reopened ? tag('Replied again', 'bad') : null,
         t.flags.map((x) => tag(FLAG_LABEL[x] || x, 'bad')),
         t.orders?.[0] ? tag(t.orders[0].name) : null,
@@ -1574,6 +1609,7 @@
       h('label', null, 'Type ', h('select', { onchange: (e) => saveTicket(t, { category: e.target.value === t.autoCategory ? '' : e.target.value }) }, Object.keys(b.defaults).map((c) => h('option', { value: c, selected: c === t.category, text: c })))),
       h('textarea', { class: 'note', rows: 2, placeholder: 'Internal note (not sent to the customer)', onchange: (e) => saveTicket(t, { note: e.target.value }) }, t.note || '')))
     if (t.statusBy) left.append(h('div', { class: 'muted', style: 'font-size:11.5px;margin-top:4px', text: `Last change by ${t.statusBy} ${agoTxt(t.statusAt)}` }))
+    left.append(reasonBox(t, b))
     const ra = window.InnRefund ? window.InnRefund.assess(t) : null
     if (ra) left.append(refundBox(t, ra))
     left.append(calvinBox(t, b, ra))
@@ -2021,7 +2057,9 @@
     const stagesDemo = [{ key: 'manual', label: 'Manual', save: 0, help: 'Written from scratch each time.' }, { key: 'template', label: 'Approved template', save: 0.4, help: 'Agent picks the template; name, order and tracking fill in.' }, { key: 'autodraft', label: 'Auto-drafted in Gmail', save: 0.7, help: 'A filled draft is waiting in the Gmail thread when the ticket arrives. Agent checks and sends.' }, { key: 'autosend', label: 'Auto-send', save: 0.95, help: 'Sent without a person. Only Where is my order, after a test run of auto-drafts; anything the rules cannot answer for certain is still drafted.' }]
     const stageOf = { 'Where is my order': 'autodraft', Subscription: 'template' }
     const automation = cats.map((c) => { const st = stagesDemo.find((s) => s.key === (stageOf[c] || 'manual')); const tpl = tplDemo.find((x) => x.key === defaults[c]); return { category: c, potential: never.has(c) ? 'never' : ['Not working / results', 'Other'].includes(c) ? 'low' : 'high', play: '', stage: st.key, stageSince: st.key !== 'manual' ? ago(24 * 6) : null, owner: st.key !== 'manual' ? 'Khethiwe' : '', nextStep: c === 'Subscription' ? 'Approve wording with Calvin, then auto-draft' : '', perWeek: pw[c], hoursPerWeek: (pw[c] * 6) / 60, savedHoursPerWeek: (pw[c] * 6 * st.save) / 60, template: tpl ? { key: tpl.key, title: tpl.title, approved: tpl.approved } : null, draftsAgent28: st.key === 'template' ? 41 : 3, draftsAuto28: st.key === 'autodraft' ? 166 : 0, tickets28: pw[c] * 4 } })
-    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Khethiwe', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, loopReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString() }, minutes: 6 }
+    const dr = { d2: ['Have enough product', 'too many bottles at home'], d3: ['Side effect or reaction', 'rash on neck after a week'] }
+    for (const tk of tickets) if (dr[tk.id]) { tk.reason = dr[tk.id][0]; tk.reasonNote = dr[tk.id][1]; tk.reasonAt = new Date().toISOString() }
+    return { tickets, templates: tplDemo, statuses: ['New', 'Drafted', 'Replied', 'Waiting on customer', 'With Calvin', 'With Khethiwe', 'With Zendrop', 'Done', 'Skip'], defaults, automation, stages: stagesDemo, settings: { cs_discount_code: 'WELCOME15' }, clickupReady: true, shopifyReady: true, loopReady: true, sync: { lastIngestAt: new Date().toISOString() }, draftScript: { at: new Date().toISOString(), version: 5 }, minutes: 6, reasons: ["Didn't know it was a subscription", 'Only wanted one order', 'Too expensive', 'Not seeing results', 'Side effect or reaction', 'Allergy (e.g. fish)', 'Where it is made / quality concern', 'Shipping too slow', 'Not received / lost', 'Damaged or wrong item', 'Have enough product', 'Found an alternative', 'Charged unexpectedly / billing', 'Other'], reasonStats: null }
   }
 
   // ---------- demo data (layout check without secrets: /innaderm?demo=1) ----------
