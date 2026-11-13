@@ -91,13 +91,17 @@ function sync() {
   if (lastRun) {
     const since = Number(props.getProperty('catchupSince') || (lastRun - 3600))
     let start = Number(props.getProperty('catchupStart') || 0)
-    let finished = false
+    let finished = false, sent = false
     while (Date.now() - started < TIME_BUDGET_MS / 2) {
       const threads = GmailApp.search('-in:spam -in:trash -in:drafts after:' + since, start, 100)
-      if (threads.length) post(threads.map(function (t) { return pack(t, team) }).filter(Boolean), me, false, false)
+      const packed = threads.map(function (t) { return pack(t, team) }).filter(Boolean)
+      if (packed.length) { post(packed, me, false, false); sent = true }
       if (threads.length < 100) { finished = true; break }
       start += 100
     }
+    // A quiet hour still checks in, so the board can tell "no new emails"
+    // apart from "the sync has stopped".
+    if (!sent) post([], me, false, false, true)
     if (finished) {
       props.deleteProperty('catchupSince')
       props.deleteProperty('catchupStart')
@@ -162,8 +166,8 @@ function pack(thread, team) {
   return { id: thread.getId(), subject: thread.getFirstMessageSubject(), inInbox: thread.isInInbox(), customer: customer, customerName: customerName, excerpt: excerpt, lastExcerpt: lastExcerpt, messages: messages }
 }
 
-function post(threads, mailbox, backfillDone, backfill) {
-  for (let i = 0; i < threads.length || (i === 0 && backfillDone); i += BATCH) {
+function post(threads, mailbox, backfillDone, backfill, heartbeat) {
+  for (let i = 0; i < threads.length || (i === 0 && (backfillDone || heartbeat)); i += BATCH) {
     const res = UrlFetchApp.fetch(DASHBOARD_URL + '/api/innaderm/cs/ingest', {
       method: 'post',
       contentType: 'application/json',
@@ -182,7 +186,7 @@ function post(threads, mailbox, backfillDone, backfill) {
 // go to the customer straight away. A refreshed draft deletes the one it
 // replaces (version 3). Runs every minute (and at the start of each sync). The dashboard claims each
 // item as it hands it out, so a reply is never sent twice.
-const SCRIPT_VERSION = 4
+const SCRIPT_VERSION = 5
 function makeDrafts() {
   const lock = LockService.getScriptLock()
   if (!lock.tryLock(1000)) return
