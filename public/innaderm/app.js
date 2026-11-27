@@ -1436,13 +1436,15 @@
     try { state.board = await api('/cs/board') } catch (e) { state.boardError = e.message }
     state.boardLoading = false; render()
   }
-  // Refresh in the background unless someone is mid-edit.
+  // Refresh in the background unless someone is mid-edit. Every 10 minutes,
+  // not 2: each refresh wakes the database, and a board left open all day
+  // kept it awake (the Neon compute allowance ran out on 27 Nov).
   setInterval(() => {
     if (state.view !== 'board' || !state.me || document.hidden || DEMO) return
     const a = document.activeElement
     if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return
     loadBoard(true)
-  }, 120e3)
+  }, 600e3)
 
   // One row per customer: every open email from the same address becomes one
   // ticket. The newest email is the one we reply to; status changes apply to
