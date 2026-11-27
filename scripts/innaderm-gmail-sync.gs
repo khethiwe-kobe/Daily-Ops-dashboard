@@ -8,7 +8,7 @@
  *     agent signed each reply, the start of the customer's first message (to
  *     sort the ticket into a type) and their latest message (so the support
  *     board can show it). No attachments.
- *   - every minute, handles replies queued on the support board: "Put in Gmail
+ *   - every 15 minutes (with each sync), handles replies queued on the support board: "Put in Gmail
  *     as draft" becomes a draft in the right thread for the agent to check and
  *     send; "Send reply" goes to the customer straight away.
  *
@@ -46,13 +46,15 @@ const BACKFILL_DAYS = 90
 const BATCH = 40                 // threads per POST
 const TIME_BUDGET_MS = 4.5 * 60e3
 
-// Sync every 5 minutes; queued replies and drafts every minute.
+// Sync every 15 minutes; queued replies and drafts are handled in the same run.
 function installTriggers() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'sync' || t.getHandlerFunction() === 'makeDrafts') ScriptApp.deleteTrigger(t)
   })
-  ScriptApp.newTrigger('sync').timeBased().everyMinutes(5).create()
-  ScriptApp.newTrigger('makeDrafts').timeBased().everyMinutes(1).create()
+  // One trigger every 15 minutes (sync also makes the drafts). Polling every
+  // minute kept the database awake 24/7 and used up its plan quota (27 Nov),
+  // which locked everyone out of the dashboard.
+  ScriptApp.newTrigger('sync').timeBased().everyMinutes(15).create()
 }
 
 function setup() {
@@ -184,7 +186,7 @@ function post(threads, mailbox, backfillDone, backfill, heartbeat) {
 // message: "draft" ones become Gmail drafts for the agent to check and send,
 // "send" ones (Send reply on the board, or an auto-sent "where is my order")
 // go to the customer straight away. A refreshed draft deletes the one it
-// replaces (version 3). Runs every minute (and at the start of each sync). The dashboard claims each
+// replaces (version 3). Runs at the start of each sync (every 15 minutes). The dashboard claims each
 // item as it hands it out, so a reply is never sent twice.
 const SCRIPT_VERSION = 5
 function makeDrafts() {

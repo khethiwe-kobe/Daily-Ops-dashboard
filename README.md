@@ -195,7 +195,7 @@ status, type correction, an internal note, and a reply composer.
   `{order_or_ask}`, `{discount_code}`, `{agent}` fill in; `[CAPITALS]` must be
   replaced by the agent. Signed with the agent's own name ("Signing as").
 - **Put in Gmail as draft** queues the reply (`inn_cs_drafts`); the Apps
-  Script (every 5 min) creates it as a draft reply in the thread, so the agent
+  Script (every 15 min) creates it as a draft reply in the thread, so the agent
   checks it in Gmail and presses Send.
 - **Send to Calvin** creates a task in ClickUp Founder Escalations (assigned to
   Calvin, tag `innaderm`, `innaderm-thread:` line, custom fields filled).
